@@ -133,8 +133,8 @@ down. The full procedure is in
 3. `groupadd -f rackctl` (rack_controller sets `/run/rack_controller/` and
    `ctl.sock` to `root:rackctl` itself).
 4. Repoint `/etc/webif/ua_RelayController.conf` at rack_controller
-   (`app_name="rack_controller"`, `app_cmd="rack_controller"`, `app_args` empty
-   or `--start-open`, `app_enabled="true"`) and disable `ua_FanController.conf`.
+   (`app_name="rack_controller"`, `app_cmd="rack_controller"`, `app_args="--relays 0,1,2,4,6"`
+   (or `--start-open` to keep every PC off), `app_enabled="true"`) and disable `ua_FanController.conf`.
 5. `kill -TERM $(pidof relay_controller)`, then
    `/etc/webif/init.d/S20RelayController start`.
 6. `/tmp/rack_controller/stderr` shows the fans and SSR attaching, the relay

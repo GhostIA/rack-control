@@ -177,8 +177,14 @@ Done on 2026-11-21:
    `cmd=open`, fans `duty=0.50`, SSR `cmd=on`.
 
 `--start-open` keeps every relay open so the PCs stay off for `map-verify` and
-an ordered `rack-up`. **After the first rack-up, set `app_args=""`** so a
-later SBC4 boot brings the relays back on as before.
+an ordered `rack-up`. After the 2026-11-21 rack-up, `app_args` was set to
+**`--relays 0,1,2,4,6`**: an SBC4 boot closes only the five PC relays (staggered,
+PCs boot via AC recovery) and leaves the empty relays 3, 5, 7 open.
+
+**Stopping it:** `S20RelayController stop` finds the process by its full
+command line, so after an `app_args` change it won't match an instance started
+with the old args. Use `kill -TERM $(pidof rack_controller)` instead (this
+opens every relay).
 
 **No automatic restart:** the Phidget launcher starts the app once. If
 rack_controller crashes, nothing restarts it, and the hardware failsafe opens
