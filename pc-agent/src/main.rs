@@ -26,7 +26,9 @@ const USAGE: &str = "\
 usage:
   rack-agent [run] [--config <path>]                 run the agent (default config /etc/rack-agent/config.toml)
   rack-agent check [--config <path>]                 validate the config and exit
-  rack-agent install [--dry-run] [--config <path>]   install binary, unit, polkit rule, user, config (root)
+  rack-agent install [--dry-run] [--config <path>] [--bundle <dir>]
+                                                     install binary, unit, polkit rule, user, config, and
+                                                     a `rackpki bundle <name>` dir into /etc/rack (root)
   rack-agent --version | --help";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -40,6 +42,7 @@ enum Cli {
     Install {
         dry_run: bool,
         config: Option<PathBuf>,
+        bundle: Option<PathBuf>,
     },
     Help,
     Version,
@@ -55,6 +58,7 @@ fn parse_args(args: &[String]) -> Result<Cli> {
     };
     let mut config: Option<PathBuf> = None;
     let mut dry_run = false;
+    let mut bundle: Option<PathBuf> = None;
     while let Some(a) = it.next() {
         match a.as_str() {
             "--config" | "-c" => {
@@ -62,13 +66,21 @@ fn parse_args(args: &[String]) -> Result<Cli> {
                 config = Some(PathBuf::from(v));
             }
             "--dry-run" if sub == Some("install") => dry_run = true,
+            "--bundle" if sub == Some("install") => {
+                let v = it.next().context("--bundle needs a directory")?;
+                bundle = Some(PathBuf::from(v));
+            }
             "-h" | "--help" => return Ok(Cli::Help),
             other => bail!("unknown argument {other:?}\n{USAGE}"),
         }
     }
     let default = || PathBuf::from(DEFAULT_CONFIG_PATH);
     Ok(match sub {
-        Some("install") => Cli::Install { dry_run, config },
+        Some("install") => Cli::Install {
+            dry_run,
+            config,
+            bundle,
+        },
         Some("check") => Cli::Check {
             config: config.unwrap_or_else(default),
         },
@@ -95,7 +107,11 @@ fn main() {
             println!("ok: {} -> {}:{}", c.name, c.broker_host, c.broker_port);
             Ok(())
         }
-        Cli::Install { dry_run, config } => install::install(dry_run, config.as_deref()),
+        Cli::Install {
+            dry_run,
+            config,
+            bundle,
+        } => install::install(dry_run, config.as_deref(), bundle.as_deref()),
         Cli::Run { config } => {
             let cfg = Config::load(&config);
             cfg.and_then(|cfg| {
@@ -206,9 +222,20 @@ mod tests {
             parse_args(&a(&["install", "--dry-run"])).unwrap(),
             Cli::Install {
                 dry_run: true,
-                config: None
+                config: None,
+                bundle: None
             }
         );
+        assert_eq!(
+            parse_args(&a(&["install", "--config", "/c.toml", "--bundle", "/b"])).unwrap(),
+            Cli::Install {
+                dry_run: false,
+                config: Some("/c.toml".into()),
+                bundle: Some("/b".into())
+            }
+        );
+        assert!(parse_args(&a(&["run", "--bundle", "/b"])).is_err());
+        assert!(parse_args(&a(&["install", "--bundle"])).is_err());
         assert_eq!(
             parse_args(&a(&["check"])).unwrap(),
             Cli::Check { config: def }

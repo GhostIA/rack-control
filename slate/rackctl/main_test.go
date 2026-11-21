@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/GhostIA/rack-control/slate/rackctl/internal/config"
@@ -100,4 +102,48 @@ func TestRunBadConfig(t *testing.T) {
 	if code := run([]string{"rackctl", "--config", "/nonexistent.toml", "status"}, &out, &errb); code != 2 {
 		t.Fatalf("exit %d", code)
 	}
+}
+
+// Race: several rackctl processes start at once (e.g. a double-typed
+// rack-shutdown). Exactly one may hold the orchestration lock; the rest must
+// be refused immediately, and the lock must be free again after release.
+func TestLockIsExclusiveUnderConcurrency(t *testing.T) {
+	old := lockPath
+	lockPath = filepath.Join(t.TempDir(), "run", "rackctl.lock")
+	defer func() { lockPath = old }()
+
+	const n = 16
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		releases []func()
+		refused  int
+	)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			rel, err := lock()
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				refused++
+				return
+			}
+			releases = append(releases, rel)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if len(releases) != 1 || refused != n-1 {
+		t.Fatalf("holders=%d refused=%d, want 1 and %d", len(releases), refused, n-1)
+	}
+	releases[0]()
+	rel, err := lock()
+	if err != nil {
+		t.Fatalf("lock not reusable after release: %v", err)
+	}
+	rel()
 }

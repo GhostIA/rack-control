@@ -22,7 +22,7 @@ env_logger = "0.11"
 zbus = { version = "4.4.0", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
-tokio = { version = "1.40", features = ["rt", "macros", "time", "test-util"] }
+tokio = { version = "1.40", features = ["rt", "macros", "time", "test-util", "rt-multi-thread"] }
 
 [profile.release]
 lto = true

@@ -8,7 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/hashicorp/go-hclog"
 	"os"
 	"strconv"
 	"strings"
@@ -28,7 +28,7 @@ type Bus struct {
 	mu     sync.Mutex
 	seq    uint64
 	last   map[string]orch.Msg
-	logger *log.Logger
+	logger hclog.Logger
 }
 
 // TLSConfig builds the client TLS config: TLS >= 1.2, the rack CA as the only
@@ -71,7 +71,7 @@ func ReadPassword(path string) (string, error) {
 // for retained messages to arrive. clientID is normally the username; the
 // read-only `status` command uses a distinct one so it never evicts a
 // running orchestration from the broker.
-func Connect(ctx context.Context, b config.Broker, clientID string, settle time.Duration, logger *log.Logger) (*Bus, error) {
+func Connect(ctx context.Context, b config.Broker, clientID string, settle time.Duration, logger hclog.Logger) (*Bus, error) {
 	for name, v := range map[string]string{"ca": b.CA, "cert": b.Cert, "key": b.Key, "password_file": b.PasswordFile} {
 		if v == "" {
 			return nil, fmt.Errorf("broker.%s is required", name)
@@ -103,7 +103,7 @@ func Connect(ctx context.Context, b config.Broker, clientID string, settle time.
 		SetMaxReconnectInterval(5 * time.Second).
 		SetOrderMatters(true).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
-			logger.Printf("mqtt: connection lost: %v (reconnecting)", err)
+			logger.Warn("mqtt connection lost; reconnecting", "error", err)
 		})
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		// Clean session: (re)subscribe on every connect.
@@ -120,7 +120,7 @@ func Connect(ctx context.Context, b config.Broker, clientID string, settle time.
 				err = t.Error()
 			}
 			if err != nil {
-				logger.Printf("mqtt: subscribe: %v", err)
+				logger.Error("mqtt subscribe failed", "error", err)
 			}
 			select {
 			case subscribed <- err:
@@ -165,7 +165,7 @@ func Connect(ctx context.Context, b config.Broker, clientID string, settle time.
 func (b *Bus) handle(_ mqtt.Client, m mqtt.Message) {
 	topic, payload := m.Topic(), string(m.Payload())
 	if !orch.ValidState(topic, payload) {
-		b.logger.Printf("mqtt: ignoring unexpected %s = %q", topic, payload)
+		b.logger.Warn("ignoring unexpected message", "topic", topic, "payload", payload)
 		return
 	}
 	b.mu.Lock()
@@ -175,8 +175,15 @@ func (b *Bus) handle(_ mqtt.Client, m mqtt.Message) {
 		// fresh reply to a command: store it without advancing Seq, so
 		// waits that need "arrived after the command" ignore it. Live
 		// messages are forwarded with the retain flag cleared (MQTT 3.1.1).
-		prev := b.last[topic]
-		b.last[topic] = orch.Msg{Payload: payload, Seq: prev.Seq}
+		// It also never replaces a value that arrived live: keeping the live
+		// Seq while swapping in the retained payload would let a stale
+		// payload pass a "fresh after mark" wait (reconnect race). The broker
+		// only retains what it already delivered live, so dropping it here
+		// loses nothing.
+		if prev, ok := b.last[topic]; ok && prev.Seq > 0 {
+			return
+		}
+		b.last[topic] = orch.Msg{Payload: payload, Seq: 0}
 		return
 	}
 	b.seq++

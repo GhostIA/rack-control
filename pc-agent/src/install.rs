@@ -47,8 +47,50 @@ pub enum Step {
         src: ConfigSource,
     },
     KeepConfig,
+    /// Copy a `rackpki bundle <name>` directory into /etc/rack.
+    InstallBundle(Bundle),
     Run(Vec<&'static str>),
     Warn(String),
+}
+
+pub const RACK_DIR: &str = "/etc/rack";
+pub const TLS_DIR: &str = "/etc/rack/tls";
+
+/// A `rackpki bundle <name>` directory: ca.crt, <name>.crt, <name>.key,
+/// <name>.password.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bundle {
+    pub dir: PathBuf,
+    pub name: String,
+}
+
+impl Bundle {
+    /// (file in bundle, destination, mode, group-readable by rack-agent)
+    fn files(&self) -> Vec<(PathBuf, PathBuf, u32, bool)> {
+        let n = &self.name;
+        let tls = Path::new(TLS_DIR);
+        vec![
+            (self.dir.join("ca.crt"), tls.join("ca.crt"), 0o644, false),
+            (
+                self.dir.join(format!("{n}.crt")),
+                tls.join(format!("{n}.crt")),
+                0o644,
+                false,
+            ),
+            (
+                self.dir.join(format!("{n}.key")),
+                tls.join(format!("{n}.key")),
+                0o640,
+                true,
+            ),
+            (
+                self.dir.join(format!("{n}.password")),
+                Path::new(RACK_DIR).join(format!("{n}.password")),
+                0o640,
+                true,
+            ),
+        ]
+    }
 }
 
 impl fmt::Display for Step {
@@ -71,6 +113,13 @@ impl fmt::Display for Step {
                 write!(f, "install {s} -> {DEFAULT_CONFIG_PATH} (0640 root:{USER})")
             }
             Step::KeepConfig => write!(f, "keep existing {DEFAULT_CONFIG_PATH}"),
+            Step::InstallBundle(b) => write!(
+                f,
+                "install bundle {} -> {TLS_DIR}/ (ca.crt, {n}.crt 0644; {n}.key 0640 root:{USER}) \
+                 and {RACK_DIR}/{n}.password (0640 root:{USER})",
+                b.dir.display(),
+                n = b.name
+            ),
             Step::Run(argv) => write!(f, "run {}", argv.join(" ")),
             Step::Warn(s) => write!(f, "WARNING: {s}"),
         }
@@ -88,7 +137,7 @@ pub struct HostState {
     pub polkitd_present: bool,
 }
 
-pub fn plan(host: &HostState, config_src: Option<&Path>) -> Vec<Step> {
+pub fn plan(host: &HostState, config_src: Option<&Path>, bundle: Option<&Bundle>) -> Vec<Step> {
     let mut steps = Vec::new();
     if host.exe != Path::new(BIN_PATH) {
         steps.push(Step::CopyBinary {
@@ -122,6 +171,9 @@ pub fn plan(host: &HostState, config_src: Option<&Path>) -> Vec<Step> {
                 None => ConfigSource::BuiltinExample,
             },
         });
+    }
+    if let Some(b) = bundle {
+        steps.push(Step::InstallBundle(b.clone()));
     }
     steps.push(Step::Run(vec![SYSTEMCTL, "daemon-reload"]));
     // Upgrade path: a running agent picks up the new binary; no-op otherwise.
@@ -260,17 +312,61 @@ fn execute(step: &Step) -> Result<()> {
                 .with_context(|| format!("chown {}", path.display()))
         }
         Step::KeepConfig => Ok(()),
+        Step::InstallBundle(b) => {
+            let gid = passwd_has("/etc/group", USER)?
+                .with_context(|| format!("group {USER} not found in /etc/group"))?;
+            for dir in [RACK_DIR, TLS_DIR] {
+                fs::create_dir_all(dir).with_context(|| format!("creating {dir}"))?;
+                std::os::unix::fs::chown(dir, Some(0), Some(gid))
+                    .with_context(|| format!("chown {dir}"))?;
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o750))?;
+            }
+            for (src, dst, mode, group) in b.files() {
+                let bytes = fs::read(&src).with_context(|| format!("reading {}", src.display()))?;
+                write_atomic(&dst, &bytes, mode)?;
+                std::os::unix::fs::chown(&dst, Some(0), Some(if group { gid } else { 0 }))
+                    .with_context(|| format!("chown {}", dst.display()))?;
+            }
+            Ok(())
+        }
         Step::Run(argv) => run(argv),
         Step::Warn(_) => Ok(()),
     }
 }
 
-pub fn install(dry_run: bool, config_src: Option<&Path>) -> Result<()> {
+/// Resolve `--bundle DIR`: the name comes from --config, else the installed
+/// config. Every file must exist up front so a partial install can't happen.
+fn resolve_bundle(dir: &Path, config_src: Option<&Path>) -> Result<Bundle> {
+    let cfg_path = config_src.unwrap_or(Path::new(DEFAULT_CONFIG_PATH));
+    let name = Config::load(cfg_path)
+        .with_context(|| {
+            format!(
+                "--bundle needs a valid config for the name ({})",
+                cfg_path.display()
+            )
+        })?
+        .name;
+    let b = Bundle {
+        dir: dir.to_path_buf(),
+        name,
+    };
+    for (src, ..) in b.files() {
+        if !src.is_file() {
+            bail!("bundle is missing {}", src.display());
+        }
+    }
+    Ok(b)
+}
+
+pub fn install(dry_run: bool, config_src: Option<&Path>, bundle_dir: Option<&Path>) -> Result<()> {
     if !dry_run && !is_root()? {
         bail!("install must run as root (or use --dry-run)");
     }
     let host = gather(config_src)?;
-    let steps = plan(&host, config_src);
+    let bundle = bundle_dir
+        .map(|d| resolve_bundle(d, config_src))
+        .transpose()?;
+    let steps = plan(&host, config_src, bundle.as_ref());
     if dry_run {
         println!("rack-agent install --dry-run: would perform:");
         for (i, s) in steps.iter().enumerate() {
@@ -282,10 +378,14 @@ pub fn install(dry_run: bool, config_src: Option<&Path>) -> Result<()> {
         println!("==> {s}");
         execute(s).with_context(|| format!("step failed: {s}"))?;
     }
-    println!(
-        "done. Put TLS material in /etc/rack/tls/ and the password in /etc/rack/<name>.password \
-         (0640 root:{USER}); see README."
-    );
+    if bundle.is_none() {
+        println!(
+            "done. Put TLS material in /etc/rack/tls/ and the password in /etc/rack/<name>.password \
+             (0640 root:{USER}), or re-run with --bundle <dir>; see README."
+        );
+    } else {
+        println!("done.");
+    }
     Ok(())
 }
 
@@ -309,7 +409,7 @@ mod tests {
 
     #[test]
     fn fresh_host_dry_run_lists_all_actions() {
-        let steps = plan(&host(), None);
+        let steps = plan(&host(), None, None);
         assert_eq!(
             render(&steps),
             vec![
@@ -337,7 +437,7 @@ mod tests {
             config_valid: true,
             polkitd_present: false,
         };
-        let r = render(&plan(&h, Some(Path::new("/tmp/c.toml"))));
+        let r = render(&plan(&h, Some(Path::new("/tmp/c.toml")), None));
         assert!(!r.iter().any(|s| s.starts_with("copy ")), "{r:?}");
         assert!(!r.iter().any(|s| s.contains("useradd")));
         assert!(r
@@ -357,10 +457,64 @@ mod tests {
             config_valid: true,
             ..host()
         };
-        let steps = plan(&h, Some(Path::new("/root/intel-1ecbc8.toml")));
+        let steps = plan(&h, Some(Path::new("/root/intel-1ecbc8.toml")), None);
         assert!(steps.contains(&Step::InstallConfig {
             src: ConfigSource::File("/root/intel-1ecbc8.toml".into())
         }));
+    }
+
+    #[test]
+    fn bundle_installed_after_user_and_before_start() {
+        let h = HostState {
+            config_valid: true,
+            ..host()
+        };
+        let b = Bundle {
+            dir: "/root/deploy".into(),
+            name: "intel-d1babf".into(),
+        };
+        let r = render(&plan(&h, Some(Path::new("/root/c.toml")), Some(&b)));
+        let pos = |p: &str| r.iter().position(|s| s.starts_with(p)).unwrap();
+        let bi = pos("install bundle /root/deploy");
+        assert!(pos("run /usr/sbin/useradd") < bi);
+        assert!(bi < pos("run /usr/bin/systemctl enable --now"));
+        assert!(r[bi].contains("intel-d1babf.key 0640 root:rack-agent"));
+        assert!(r[bi].contains("/etc/rack/intel-d1babf.password"));
+    }
+
+    #[test]
+    fn bundle_file_modes_and_destinations() {
+        let b = Bundle {
+            dir: "/d".into(),
+            name: "intel-x".into(),
+        };
+        let f = b.files();
+        let get = |dst: &str| f.iter().find(|x| x.1 == Path::new(dst)).unwrap();
+        assert_eq!(get("/etc/rack/tls/ca.crt").2, 0o644);
+        assert!(!get("/etc/rack/tls/intel-x.crt").3);
+        assert_eq!(get("/etc/rack/tls/intel-x.key").2, 0o640);
+        assert!(get("/etc/rack/tls/intel-x.key").3);
+        assert_eq!(get("/etc/rack/intel-x.password").2, 0o640);
+        assert_eq!(
+            get("/etc/rack/intel-x.password").0,
+            Path::new("/d/intel-x.password")
+        );
+    }
+
+    #[test]
+    fn resolve_bundle_rejects_missing_files() {
+        let dir = std::env::temp_dir().join(format!("rack-agent-bundle-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("c.toml");
+        fs::write(&cfg, "name = \"intel-x\"\nbroker_host = \"192.168.8.1\"\n").unwrap();
+        fs::write(dir.join("ca.crt"), "x").unwrap();
+        let err = resolve_bundle(&dir, Some(&cfg)).unwrap_err().to_string();
+        assert!(err.contains("intel-x.crt"), "{err}");
+        for f in ["intel-x.crt", "intel-x.key", "intel-x.password"] {
+            fs::write(dir.join(f), "x").unwrap();
+        }
+        assert_eq!(resolve_bundle(&dir, Some(&cfg)).unwrap().name, "intel-x");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

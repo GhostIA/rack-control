@@ -9,8 +9,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/hashicorp/go-hclog"
 	"io"
-	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -26,9 +27,11 @@ import (
 
 const (
 	defaultConfig = "/etc/rack/rack.toml"
-	lockPath      = "/var/run/rackctl.lock"
 	settleTime    = 2 * time.Second
 )
+
+// lockPath is a var so tests can point it at a temp dir.
+var lockPath = "/var/run/rackctl.lock"
 
 const usage = `usage: rackctl [--config FILE] <command> [flags] [args]
 
@@ -207,7 +210,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger := log.New(stderr, "", log.LstdFlags)
+	logger := newLogger(stderr)
 	var bus orch.Bus
 	var pinger orch.Pinger
 	if !o.dry {
@@ -259,4 +262,20 @@ func run(argv []string, stdout, stderr io.Writer) int {
 
 func main() {
 	os.Exit(run(os.Args, os.Stdout, os.Stderr))
+}
+
+// newLogger builds the diagnostic logger (stderr; progress output stays on
+// stdout). RACKCTL_LOG_LEVEL overrides the level (trace, debug, info, warn,
+// error). The paho MQTT library's own warnings and errors go through it too.
+func newLogger(w io.Writer) hclog.Logger {
+	level := hclog.LevelFromString(os.Getenv("RACKCTL_LOG_LEVEL"))
+	if level == hclog.NoLevel {
+		level = hclog.Info
+	}
+	l := hclog.New(&hclog.LoggerOptions{Name: "rackctl", Output: w, Level: level})
+	p := l.Named("paho")
+	mqtt.ERROR = p.StandardLogger(&hclog.StandardLoggerOptions{ForceLevel: hclog.Error})
+	mqtt.CRITICAL = p.StandardLogger(&hclog.StandardLoggerOptions{ForceLevel: hclog.Error})
+	mqtt.WARN = p.StandardLogger(&hclog.StandardLoggerOptions{ForceLevel: hclog.Warn})
+	return l
 }

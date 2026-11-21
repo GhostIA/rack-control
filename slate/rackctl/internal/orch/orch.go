@@ -283,7 +283,7 @@ func (o *Orchestrator) setCeph(ctx context.Context, val string, timeout time.Dur
 			return nil
 		}
 		if ctx.Err() != nil || errors.Is(err, errReported) || !o.Clock.Now().Before(deadline) {
-			return fmt.Errorf("ceph maintenance %s not confirmed: %w", val, err)
+			return fmt.Errorf("ceph maintenance %s not confirmed within %s (re-sent every %s): %w", val, timeout, o.CephRepublish, err)
 		}
 	}
 }

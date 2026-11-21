@@ -216,6 +216,13 @@ impl<P: Publisher, O: PowerOff, C: CephRunner> Agent<P, O, C> {
             return self.handle_cmd(&msg.payload).await;
         }
         if msg.topic == CEPH_SET_TOPIC && self.ceph_maintenance {
+            if self.shutting_down {
+                // The host is powering off: don't start ceph commands that
+                // systemd would kill mid-run, and don't report state for a
+                // node that is going away.
+                warn!("ignoring ceph maintenance command: power-off in progress");
+                return Outcome::Continue;
+            }
             self.handle_ceph(&msg.payload).await;
             return Outcome::Continue;
         }
@@ -396,6 +403,64 @@ mod tests {
     }
 
     const CMD: &str = "rack/pc/intel-test/cmd";
+
+    /// Race: many producers on worker threads flood the agent's inbox (as the
+    /// MQTT event loop would after a reconnect replay) with interleaved
+    /// shutdown duplicates, retained copies, junk, and ceph commands. The
+    /// agent must power off exactly once, publish `down` exactly once and
+    /// before the power-off, and act on nothing after it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_message_storm_powers_off_once() {
+        for round in 0..20 {
+            let c = cfg("ceph_maintenance = true\n");
+            let (mut a, log) = agent(&c, true);
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<Message>(1024);
+            let mut producers = Vec::new();
+            for p in 0..8u32 {
+                let tx = tx.clone();
+                producers.push(tokio::spawn(async move {
+                    for i in 0..50u32 {
+                        let m = match (p + i + round) % 5 {
+                            0 => msg(CMD, b"shutdown", false),
+                            1 => msg(CMD, b"shutdown", true),
+                            2 => msg(CMD, b"Shutdown", false),
+                            3 => msg("rack/ceph/maintenance/set", b"on", false),
+                            _ => msg("rack/pc/intel-other/cmd", b"shutdown", false),
+                        };
+                        if tx.send(m).await.is_err() {
+                            return; // agent stopped consuming: fine
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                }));
+            }
+            drop(tx);
+            // The real agent keeps consuming after PowerOff until systemd
+            // stops it, so drain the whole storm.
+            while let Some(m) = rx.recv().await {
+                a.handle(&m).await;
+            }
+            for p in producers {
+                p.await.unwrap();
+            }
+            let log = log.borrow();
+            let offs = log.iter().filter(|l| *l == "poweroff").count();
+            let downs: Vec<_> = log
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.ends_with("/status down"))
+                .collect();
+            assert_eq!(offs, 1, "round {round}: {log:?}");
+            assert_eq!(downs.len(), 1, "round {round}: {log:?}");
+            let off_at = log.iter().position(|l| l == "poweroff").unwrap();
+            assert!(downs[0].0 < off_at, "round {round}: down after poweroff");
+            assert_eq!(
+                off_at,
+                log.len() - 1,
+                "round {round}: acted after poweroff: {log:?}"
+            );
+        }
+    }
 
     #[test]
     fn exact_payload_parsing() {

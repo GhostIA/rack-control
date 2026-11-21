@@ -1,10 +1,11 @@
 package mqttbus
 
 import (
-	"io"
-	"log"
+	"fmt"
+	"github.com/hashicorp/go-hclog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/GhostIA/rack-control/slate/rackctl/internal/orch"
@@ -23,7 +24,7 @@ func (m msg) MessageID() uint16 { return 0 }
 func (m msg) Payload() []byte   { return []byte(m.payload) }
 func (m msg) Ack()              {}
 
-func newBus() *Bus { return &Bus{last: map[string]orch.Msg{}, logger: log.New(io.Discard, "", 0)} }
+func newBus() *Bus { return &Bus{last: map[string]orch.Msg{}, logger: hclog.NewNullLogger()} }
 
 func TestHandleKeepsOnlyValidStates(t *testing.T) {
 	b := newBus()
@@ -76,5 +77,71 @@ func TestReadPassword(t *testing.T) {
 	}
 	if _, err := ReadPassword(p); err == nil {
 		t.Fatal("empty accepted")
+	}
+}
+
+// Race: a live reply and a retained redelivery (reconnect + resubscribe)
+// interleave. The retained copy must not re-label a stale payload with the
+// live message's freshness: a waiter that marked before the live "closed"
+// arrived must not see the retained "open" as a fresh confirmation.
+func TestRetainedAfterLiveCannotFakeFreshness(t *testing.T) {
+	b := newBus()
+	mark := b.Mark()                                          // orchestrator publishes "open", then waits
+	b.handle(nil, msg{"rack/relay/1/state", "closed", false}) // unrelated live update
+	b.handle(nil, msg{"rack/relay/1/state", "open", true})    // reconnect replays retained
+	m, _ := b.Get("rack/relay/1/state")
+	if m.Payload == "open" && m.Seq > mark {
+		t.Fatalf("retained %q counted as fresh after mark %d: %+v", "open", mark, m)
+	}
+}
+
+// Race detector target: paho delivers on its own goroutines while the
+// orchestrator polls Get/Mark. Run with -race. Also checks that Mark is
+// monotonic and Get never returns a Seq beyond the Mark read after it.
+func TestConcurrentHandleGetMark(t *testing.T) {
+	b := newBus()
+	topics := []string{"rack/relay/0/state", "rack/relay/1/state", "rack/pc/intel-x/status", "rack/sbc4/status"}
+	payloads := map[string][2]string{
+		"rack/relay/0/state":     {"open", "closed"},
+		"rack/relay/1/state":     {"open", "closed"},
+		"rack/pc/intel-x/status": {"online", "down"},
+		"rack/sbc4/status":       {"online", "offline"},
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 2000; i++ {
+				tp := topics[(w+i)%len(topics)]
+				b.handle(nil, msg{tp, payloads[tp][i%2], (w+i)%3 == 0})
+			}
+		}(w)
+	}
+	errs := make(chan string, 16)
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var last uint64
+			for i := 0; i < 4000; i++ {
+				m, _ := b.Get(topics[i%len(topics)])
+				mk := b.Mark()
+				if mk < last {
+					errs <- fmt.Sprintf("Mark went backwards: %d -> %d", last, mk)
+					return
+				}
+				if m.Seq > mk {
+					errs <- fmt.Sprintf("Get Seq %d beyond later Mark %d", m.Seq, mk)
+					return
+				}
+				last = mk
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
 	}
 }
