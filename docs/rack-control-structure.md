@@ -1,143 +1,138 @@
-# Rack control — repo structure
+# Rack control: repo structure
 
 One repo, organized by target machine. Each top-level dir deploys to one place.
 Claude Code runs in the repo root and writes into these; you deploy each dir to
-its target (nothing here reaches the three machines on its own).
+its target by hand (nothing here reaches the machines on its own). Build output
+goes in each component's `bin/` (Go) or `target/` (Rust), both gitignored.
 
 ```
 rack-control/
 ├── README.md                      # what this repo is; deploy map (dir -> machine)
 ├── CLAUDE.md                      # standing context for Claude Code (short; points at docs/)
 ├── docs/
-│   ├── mqtt-shutdown-handoff.md   # whole-system build spec
-│   └── rack-controller-merge.md   # merge relay_controller+fan_control -> one binary
+│   ├── rack-mqtt-shutdown-handoff.md  # whole-system spec (topics, ACLs, decisions)
+│   ├── rack-controller-merge.md       # phase 2: merge relay_controller+fan_control
+│   ├── rack-control-structure.md      # this file
+│   └── DEPLOY.md                      # deploy order, SBC4 swap, first live test, runbooks
 │
-├── sbc4/                          # -> deploys to the Phidget SBC4 (/usr/userapps/)
-│   ├── rack_controller/           # MERGED C++ — ONE process owns all of HUB0004
-│   │   ├── rack_controller.cpp    # relay_controller + fan_control merged:
-│   │   │                          #   relays hub 3,4 (PCs ch 0,1,2,4,6, staggered+failsafe)
-│   │   │                          #   fans hub 2 (OUT1100 duty), SSR hub 5 (REL1100)
-│   │   │                          #   + local Unix-socket control (open/close/fan/ssr/state)
+├── sbc4/                          # -> the Phidget SBC4 (armv7l)
+│   ├── rack_controller/           # PHASE 2 (deferred): merged C++, ONE process owns HUB0004
+│   │   ├── rack_controller.cpp    # relays ports 3,4 (all 8 ch, blocking startup+stagger+failsafe)
+│   │   │                          #   fans port 2 (OUT1100), SSR port 5 (REL1100), attach-driven
+│   │   │                          #   + local Unix socket /run/rack_controller/ctl.sock
 │   │   │                          #   NO MQTT / no network lib in the C++
-│   │   ├── Makefile               # one target rack_controller, C++17 -lphidget22 -lpthread
-│   │   └── _src/                  # the two ORIGINALS, kept for reference/rollback:
+│   │   ├── *.h                    # thin HAL header (Phidget calls behind it)
+│   │   ├── Makefile               # rack_controller, test, check-mac
+│   │   ├── rack_controller.service  # Restart=always, Conflicts=relay_controller.service
+│   │   ├── tests/                 # macOS tests against a fake HAL
+│   │   └── _src/                  # the two ORIGINALS, rollback baseline (never edited):
 │   │       ├── relay_controller.cpp
 │   │       └── fan_control.cpp
-│   ├── relay-mqtt/                # NEW: Go sidecar, MQTT <-> C++ Unix socket
-│   │   ├── main.go                # paho.mqtt.golang; subscribes rack/relay/+/set,
-│   │   │                          #   forwards to rack_controller's Unix socket
-│   │   ├── go.mod / go.sum
-│   │   └── build.sh               # GOOS=linux GOARCH=arm GOARM=7 (SBC4 armhf)
-│   └── README.md                  # ONE hub owner (why merged); build C++ on-SBC
-│                                  #   (overlay/apt caveat); cross-build Go; ONE startup entry
+│   ├── relay-mqtt/                # Rust sidecar: MQTT <-> rack_controller socket
+│   │   ├── Cargo.toml / Cargo.lock
+│   │   ├── src/                   # rumqttc (rustls); rack/relay/+/set -> socket
+│   │   ├── Makefile               # cargo zigbuild armv7-unknown-linux-musleabihf
+│   │   ├── relay-mqtt.service     # user relay-mqtt, group rackctl, After= (no Requires=)
+│   │   ├── config.example.toml
+│   │   └── e2e/                   # Docker broker + fake controller (local only)
+│   └── README.md                  # one hub owner, why merged, phase-2 status, units
 │
-├── slate/                         # -> deploys to the GL.iNet Slate (OpenWrt)
+├── slate/                         # -> the GL.iNet Slate 7 (OpenWrt, arm64)
 │   ├── mosquitto/
-│   │   ├── mosquitto.conf          # listener 8883 LAN-only, TLS + mTLS, auth required
-│   │   ├── acl                     # per-client ACLs (orchestrator/sbc4/pc certs)
-│   │   └── passwd.example          # user list; real passwd generated from 1Password creds
-│   ├── pki/                        # CA + cert GENERATION scripts only; keys are gitignored
-│   │   ├── gen-ca.sh               # make the local CA (key stays out of git)
-│   │   ├── gen-cert.sh             # per-client/server cert from the CA
-│   │   └── README.md               # SAN notes, which host gets which cert, 0600 keys
-│   ├── bin/
-│   │   ├── rack-shutdown           # ad-hoc CLI (graceful down -> cut relay)
-│   │   └── rack-up                 # ad-hoc CLI (close relay -> PC boots)
-│   ├── etc/
-│   │   └── rack.conf               # mapping: name -> IP -> relay channel; broker creds
-│   └── README.md                   # opkg installs, enable mosquitto, PATH for bin/
+│   │   ├── mosquitto.conf         # ONLY listener 8883 192.168.8.1; mTLS + password
+│   │   ├── acl                    # per-user rules from the topic table (no secrets)
+│   │   └── passwd.example         # user list; real passwd made by rackpki
+│   ├── rackpki/                   # Go PKI tool (dev box): init-ca, server, client,
+│   │   ├── go.mod / go.sum        #   passwd ($7$), bundle, expiry. Replaces gen-*.sh
+│   │   ├── *.go
+│   │   ├── Makefile               # builds for the host
+│   │   └── e2e/                   # Docker mosquitto with generated certs (local only)
+│   ├── rackctl/                   # Go orchestrator; argv[0] symlinks rack-shutdown, rack-up
+│   │   ├── go.mod / go.sum
+│   │   ├── *.go                   # shutdown, up, status, map-verify, ceph-maintenance
+│   │   ├── Makefile               # CGO_ENABLED=0 GOOS=linux GOARCH=arm64
+│   │   ├── rack.example.toml      # mapping name -> IP -> relay ch, roles, order, timeouts
+│   │   └── e2e/                   # Docker broker + fake agents (local only)
+│   ├── pki/                       # rackpki OUTPUT, gitignored entirely (CA key lives here)
+│   └── README.md                  # opkg mosquitto-ssl, sysupgrade.conf, init script, renewal
 │
-├── pc-agent/                      # -> deploys to each mini-PC (x86-64 Linux/systemd)
-│   ├── main.go                     # Go agent: payload==shutdown -> logind PowerOff
-│   ├── go.mod / go.sum
-│   ├── build.sh                    # GOOS=linux GOARCH=amd64 -> ONE binary for all 5
-│   ├── rack-agent.service          # systemd unit (name+creds from config, not build)
-│   ├── config.example              # per-PC: name, broker, pcN creds (real is 0600)
+├── pc-agent/                      # -> each mini-PC (x86_64 Proxmox VE)
+│   ├── Cargo.toml / Cargo.lock
+│   ├── src/                       # payload == shutdown -> logind PowerOff; Ceph maintenance
+│   ├── Makefile                   # cargo zigbuild x86_64-unknown-linux-musl -> ONE binary for all 5
+│   ├── rack-agent.service         # user rack-agent (name/creds from config, not build)
+│   ├── config.example.toml        # per-PC: name, broker, cert paths, dry_run, ceph_maintenance
 │   ├── polkit/
-│   │   └── 10-rack-poweroff.rules  # narrow login1.power-off grant (if not root)
-│   ├── install.sh                  # drops binary+unit+config, enables service
-│   └── README.md                   # per-PC install, creds 0600, polkit vs root
+│   │   └── 10-rack-poweroff.rules # grants only login1.power-off to rack-agent
+│   ├── e2e/                       # Docker broker + agent in dry_run (local only)
+│   └── README.md
 │
-└── .gitignore                     # ignore real secrets: passwd, *.creds, certs/
+└── .gitignore                     # secrets, slate/pki/, bin/, target/, e2e/certs/, e2e/tmp/
 ```
+
+The planned shell pieces are gone: `slate/bin/rack-shutdown`, `slate/bin/rack-up`
+and `slate/etc/rack.conf` became `rackctl` + `rack.toml`; `slate/pki/gen-ca.sh`
+and `gen-cert.sh` became `rackpki`; `pc-agent/install.sh` became the
+`pc-agent install` subcommand. The exact file names inside each component dir
+are whatever that component ships; the tree shows intent.
+
+`e2e/` harnesses run only on the dev Mac (Docker, e.g. `eclipse-mosquitto:2.0.20`)
+and must never reach 192.168.8.0/24. Their generated certs and scratch files
+(`e2e/certs/`, `e2e/tmp/`) are gitignored.
 
 ## Where the CURRENTLY RUNNING code goes
 
-Put the two working source files into `sbc4/rack_controller/_src/` as the merge
-inputs and rollback reference:
-- `relay_controller.cpp`  -> `sbc4/rack_controller/_src/relay_controller.cpp`
-- `fan_control.cpp`       -> `sbc4/rack_controller/_src/fan_control.cpp`
+The two working source files are in `sbc4/rack_controller/_src/` as the merge
+inputs and rollback reference (baseline commit `c18c6bf`):
+- `relay_controller.cpp`: runs today on the SBC4 as `relay_controller.service`
+- `fan_control.cpp`
 
 **Why merged, not two subdirs:** the SBC4 forbids two processes opening the same
 VINT hub, and both programs are on HUB0004 (relays 3,4; fans 2; SSR 5). So they
-MUST become ONE binary that owns the whole hub. See `rack-controller-merge.md`.
-
-Claude Code MERGES these two into `sbc4/rack_controller/rack_controller.cpp`
-(unified channel model + the LOCAL Unix-socket control surface; NO MQTT in C++).
-Commit the two originals in `_src/` FIRST — they're the proven safety-critical
-code; `_src/` is your rollback baseline. MQTT lives in the Go `relay-mqtt/` sidecar.
+MUST become ONE binary that owns the whole hub. See
+[rack-controller-merge.md](rack-controller-merge.md). The merge is deferred to
+phase 2.
 
 ## Deploy map (dir -> machine -> path)
 
-| repo dir              | machine        | lands at                         |
-|-----------------------|----------------|----------------------------------|
-| `sbc4/rack_controller`| Phidget SBC4   | `/usr/userapps/rack_controller/` (build on-device) — ONE binary, ONE startup entry, owns the whole hub |
-| `sbc4/relay-mqtt`     | Phidget SBC4   | its own user-app entry (Go sidecar) |
-| `slate/`              | GL.iNet Slate  | `/etc/mosquitto/`, `/usr/bin/`, `/etc/rack/` |
-| `pc-agent/`           | each mini-PC   | `/etc/systemd/system/`, `/usr/local/bin/`, `/etc/polkit-1/rules.d/` |
+| repo dir               | machine              | lands at |
+|------------------------|----------------------|----------|
+| `slate/mosquitto/`     | Slate (192.168.8.1)  | `/etc/mosquitto/` (+ `/etc/mosquitto/certs/`) |
+| `slate/rackctl/`       | Slate                | `/usr/bin/rackctl`, symlinks `rack-shutdown`, `rack-up`; `/etc/rack/rack.toml`, `/etc/rack/tls/` |
+| `slate/rackpki/`       | dev box              | not deployed; writes `slate/pki/` |
+| `pc-agent/`            | each mini-PC         | binary, `rack-agent.service`, `/etc/polkit-1/rules.d/10-rack-poweroff.rules`, `/etc/rack/` (via `pc-agent install`) |
+| `sbc4/relay-mqtt/`     | SBC4 (192.168.8.165) | binary + `relay-mqtt.service`; `/etc/rack/` (phase 2) |
+| `sbc4/rack_controller/`| SBC4                 | built on-device; `rack_controller.service` replaces `relay_controller.service` (phase 2) |
 
 NOTE: only ONE Phidget-opening process may run on the SBC4 (hub single-ownership).
-That's `rack_controller`. If either old binary (relay_controller / fan_control)
-is still registered in Startup Settings, REMOVE it — a second hub opener
-re-creates the contention. The Go sidecar does NOT open Phidgets (talks to the
-socket), so it coexists fine.
+Today that's `relay_controller`; after phase 2 it's `rack_controller`. The
+units' `Conflicts=` enforces it for systemd, but also make sure no old binary is
+registered in the Phidget web UI's Startup Settings. The sidecar does NOT open
+Phidgets (it talks to the socket), so it coexists fine.
 
-## .gitignore must exclude real secrets (critical — TLS keys + passwords)
+## .gitignore: real secrets never committed
 
-```
-# secrets — never commit
-slate/mosquitto/passwd
-**/*.creds
-**/certs/
-**/pki/*.key
-**/pki/*.crt
-**/pki/ca.*
-*.key
-*.pem
-*.crt
-config            # real per-PC agent config (has creds); keep config.example
-```
-Commit only `*.example` / placeholder files. Real passwords come from the
-1Password env at deploy time; CA key, client keys, and certs are generated by the
-pki/ scripts and deployed per-host (keys 0600), never committed. An exposed CA
-key = anyone can mint a client cert and command the rack — treat it like the
-crown jewel.
+See the repo `.gitignore`. It covers `.env` anywhere (1Password mounts),
+`slate/pki/` entirely, `**/certs/`, `*.key` / `*.pem` / `*.crt` / `*.csr` /
+`*.p12`, `*.password`, the real `slate/mosquitto/passwd`, real component
+configs (only `config.example.toml` is tracked), and build output. Real
+passwords come from the 1Password Environment `rack-mqtt` at deploy time; the
+CA key, server key and client keys are generated by `rackpki` into `slate/pki/`
+and kept as 1Password Document items. An exposed CA key = anyone can mint a
+client cert and command the rack: treat it like the crown jewel.
 
 ## CLAUDE.md (keep it short)
 
-Standing context only — point at the specs, don't inline them:
-```
-# rack-control
-Homelab rack power/cooling control across 3 machines (SBC4, Slate, Proxmox PCs).
-Specs: docs/mqtt-shutdown-handoff.md (whole system), docs/rack-controller-merge.md
-(merge the two C++ programs into one — the SBC4 hub forbids two processes on it).
-Originals to merge are in sbc4/rack_controller/_src/ — commit before merging.
-You write files here; deployment to the 3 machines is manual (you cannot reach
-them, cannot cross-compile to them). Ask the open questions before starting.
-```
+Standing context only; point at the specs, don't inline them. The repo
+[CLAUDE.md](../CLAUDE.md) is the live version. It covers: the three machines,
+the spec files, Rust daemons + Go CLIs, `_src/` is never edited, deployment is
+manual, never read `.env` files (1Password named pipes), and no live tests
+except the intel-d1babf procedure in [DEPLOY.md](DEPLOY.md#first-live-test-intel-d1babf-only).
 
-## First steps
+## First steps (done)
 
-1. `git init` in `rack-control/`.
-2. Drop the two originals into `sbc4/rack_controller/_src/`
-   (`relay_controller.cpp`, `fan_control.cpp`). The old fan `Makefile` is
-   reference only — the merged build gets a new one.
-3. Put the specs at `docs/mqtt-shutdown-handoff.md` and
-   `docs/rack-controller-merge.md`.
-4. Add `CLAUDE.md` and `.gitignore`.
-5. Commit this baseline (clean rollback point — the proven C++ in _src/).
-6. Start Claude Code: "Read docs/rack-controller-merge.md and
-   docs/mqtt-shutdown-handoff.md. First merge the two _src/ programs into
-   sbc4/rack_controller/rack_controller.cpp with the Unix-socket control surface.
-   Then build slate/, pc-agent/, and the Go relay-mqtt sidecar. Ask me the open
-   questions first. You can't reach the machines — just write files."
+1. Baseline commit `c18c6bf`: the specs, the two originals in `_src/`, and
+   `.gitignore`.
+2. Phase 1 (parallel workers): slate/mosquitto + rackpki, rackctl, pc-agent,
+   relay-mqtt (against a fake controller), and these docs.
+3. Phase 2: the rack_controller merge, then the SBC4 swap and `map-verify`.
