@@ -1,79 +1,23 @@
 //! Real Unix-socket tests: the production `UnixController` against the fake
 //! controller server listening in a temp dir.
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::Result;
-use relay_mqtt::bridge::{Bridge, Mqtt, Outcome};
+use common::{start_fake, RecMqtt, TempDir};
+use relay_mqtt::bridge::{Bridge, Outcome};
 use relay_mqtt::controller::{Controller, ReplyKind, UnixController};
-use relay_mqtt::fake_controller::{bind, run, FakeState, Shared};
+use relay_mqtt::fake_controller::FakeState;
 use relay_mqtt::mqtt::BrokerEvent;
 use relay_mqtt::protocol::Command;
 use relay_mqtt::worker;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::task::JoinHandle;
 use tokio::time::Instant;
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static N: AtomicU32 = AtomicU32::new(0);
-        // Keep it short: sun_path is ~104 bytes on macOS.
-        let p = std::env::temp_dir().join(format!(
-            "rmq-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        TempDir(p)
-    }
-    fn sock(&self) -> PathBuf {
-        self.0.join("ctl.sock")
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-#[derive(Clone, Default)]
-struct RecMqtt(Arc<Mutex<Vec<(String, String)>>>);
-
-impl RecMqtt {
-    fn take(&self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.0.lock().unwrap())
-    }
-}
-
-impl Mqtt for RecMqtt {
-    async fn publish_retained(&mut self, topic: &str, payload: &'static str) -> Result<()> {
-        self.0
-            .lock()
-            .unwrap()
-            .push((topic.to_string(), payload.to_string()));
-        Ok(())
-    }
-    async fn subscribe(&mut self, _filter: &str) -> Result<()> {
-        Ok(())
-    }
-}
-
-fn start_fake(sock: &std::path::Path, state: FakeState) -> (Shared, JoinHandle<()>) {
-    let shared: Shared = Arc::new(Mutex::new(state));
-    let l = bind(sock).unwrap();
-    let s2 = shared.clone();
-    let h = tokio::spawn(async move {
-        let _ = run(l, s2).await;
-    });
-    (shared, h)
-}
 
 fn fast_timing() -> worker::Timing {
     worker::Timing {

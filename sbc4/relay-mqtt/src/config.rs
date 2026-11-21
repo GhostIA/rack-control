@@ -65,11 +65,10 @@ impl Config {
     }
 }
 
-/// TLS material and password, read from disk.
+/// The broker password, read from disk. The TLS files are passed to Paho by
+/// path (OpenSSL reads them on every connect); `load` only checks they can
+/// be read, so a missing file is reported clearly at startup.
 pub struct Credentials {
-    pub ca: Vec<u8>,
-    pub cert: Vec<u8>,
-    pub key: Vec<u8>,
     pub password: String,
 }
 
@@ -97,13 +96,14 @@ pub fn parse_password(raw: &str) -> Result<String> {
 
 impl Credentials {
     pub fn load(c: &Config) -> Result<Self> {
-        let read = |p: &Path| std::fs::read(p).with_context(|| format!("read {}", p.display()));
+        for p in [&c.ca_file, &c.cert_file, &c.key_file] {
+            // A full read (not just open) so a directory or unreadable file
+            // is caught here, with a clear error, before Paho sees it.
+            std::fs::read(p).with_context(|| format!("read {}", p.display()))?;
+        }
         let pw_raw = std::fs::read_to_string(&c.password_file)
             .with_context(|| format!("read {}", c.password_file.display()))?;
         Ok(Credentials {
-            ca: read(&c.ca_file)?,
-            cert: read(&c.cert_file)?,
-            key: read(&c.key_file)?,
             password: parse_password(&pw_raw)
                 .with_context(|| format!("in {}", c.password_file.display()))?,
         })

@@ -4,13 +4,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use relay_mqtt::backoff::Backoff;
+use backon::Retryable;
 use relay_mqtt::bridge::Bridge;
 use relay_mqtt::config::{Config, Credentials, DEFAULT_CONFIG};
 use relay_mqtt::controller::UnixController;
-use relay_mqtt::mqtt::{options, run_eventloop, ClientMqtt};
+use relay_mqtt::mqtt::{self, ClientMqtt};
 use relay_mqtt::worker;
-use rumqttc::AsyncClient;
 use tokio::signal::unix::{signal, SignalKind};
 
 const USAGE: &str = "usage: relay-mqtt [--config PATH]   (default /etc/rack/relay-mqtt.toml)";
@@ -62,7 +61,7 @@ async fn main() -> ExitCode {
     );
 
     tokio::select! {
-        () = run(cfg) => ExitCode::SUCCESS,
+        () = run(cfg) => ExitCode::FAILURE,
         () = shutdown_signal() => {
             // Exit without DISCONNECT so the broker publishes the LWT `offline`.
             log::info!("signal received; exiting");
@@ -73,27 +72,45 @@ async fn main() -> ExitCode {
 
 async fn run(cfg: Config) {
     // Credentials may be provisioned after the service starts; wait for them.
-    let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(60));
-    let creds = loop {
-        match Credentials::load(&cfg) {
-            Ok(c) => break c,
-            Err(e) => {
-                let d = backoff.next_delay();
-                log::error!("{e:#}; retrying in {}s", d.as_secs());
-                tokio::time::sleep(d).await;
-            }
+    let creds = (|| async { Credentials::load(&cfg) })
+        .retry(
+            backon::ExponentialBuilder::new()
+                .with_min_delay(Duration::from_secs(2))
+                .with_max_delay(Duration::from_secs(60))
+                .without_max_times(),
+        )
+        .notify(|e, d| log::error!("{e:#}; retrying in {}s", d.as_secs()))
+        .await
+        .expect("retries forever");
+
+    let opts = match mqtt::connect_options(&cfg, creds) {
+        Ok(o) => o,
+        Err(e) => {
+            log::error!("{e:#}");
+            return;
         }
     };
-
-    let (client, eventloop) = AsyncClient::new(options(&cfg, creds), 64);
+    let cli = match paho_mqtt::AsyncClient::new(mqtt::create_options(&cfg)) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("create MQTT client: {e}");
+            return;
+        }
+    };
+    // Never destroy the Paho client: MQTTAsync_destroy sends a DISCONNECT,
+    // which would suppress the LWT. Leaking one handle means the process exit
+    // (on SIGTERM) just closes the socket, and the broker publishes the
+    // retained `offline` will.
+    std::mem::forget(cli.clone());
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctl = UnixController::new(cfg.socket.clone(), Duration::from_secs(3));
-    let bridge = Bridge::new(ctl, ClientMqtt(client));
+    // Callbacks first, so the first CONNACK is not missed.
+    mqtt::install_callbacks(&cli, tx);
+    mqtt::start(&cli, opts);
+    mqtt::spawn_watchdog(cli.clone(), Duration::from_secs(60));
 
-    tokio::join!(
-        run_eventloop(eventloop, tx),
-        worker::run(bridge, rx, worker::Timing::default()),
-    );
+    let ctl = UnixController::new(cfg.socket.clone(), Duration::from_secs(3));
+    let bridge = Bridge::new(ctl, ClientMqtt::new(cli));
+    worker::run(bridge, rx, worker::Timing::default()).await;
     log::error!("internal channel closed");
 }
 

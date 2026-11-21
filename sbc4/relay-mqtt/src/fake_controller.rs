@@ -6,10 +6,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncWriteExt, BufReader};
+use futures_util::{SinkExt, StreamExt};
 use tokio::net::{UnixListener, UnixStream};
+use tokio_util::codec::Framed;
 
-use crate::controller::read_line_bounded;
+use crate::controller::StrictLines;
 
 /// Requests longer than this are rejected, per the contract.
 pub const MAX_REQUEST: usize = 128;
@@ -113,19 +114,21 @@ pub fn handle(state: &Shared, line: &str) -> Vec<String> {
 }
 
 async fn serve_conn(state: Shared, stream: UnixStream) -> Result<()> {
-    let mut r = BufReader::new(stream);
+    let mut conn = Framed::new(stream, StrictLines::new(MAX_REQUEST));
     loop {
-        let line = match read_line_bounded(&mut r, MAX_REQUEST).await {
-            Ok(Some(l)) => l,
-            Ok(None) => return Ok(()),
-            Err(e) => {
-                let _ = r.get_mut().write_all(b"err bad request\n").await;
-                return Err(e);
+        let line = match conn.next().await {
+            Some(Ok(l)) => l,
+            None => return Ok(()),
+            Some(Err(e)) => {
+                let _ = conn.send("err bad request").await;
+                return Err(e.into());
             }
         };
-        let mut reply = handle(&state, &line).join("\n");
-        reply.push('\n');
-        r.get_mut().write_all(reply.as_bytes()).await?;
+        // All reply lines go out in one write, like the real controller.
+        for l in handle(&state, &line) {
+            conn.feed(l).await?;
+        }
+        SinkExt::<String>::flush(&mut conn).await?;
     }
 }
 
