@@ -129,35 +129,65 @@ reading the config, give the agent its own minimal config (`[global]` with
 
 Not before phase 2: the running `relay_controller` has no socket.
 
-1. Do the [SBC4 systemd swap](#sbc4-systemd-swap-phase-2).
+1. Do the [SBC4 controller swap](#sbc4-controller-swap-phidget-user-app).
 2. `rackpki bundle sbc4`; install to `/etc/rack/tls/` and `/etc/rack/sbc4.password`
    (0640 root:relay-mqtt or 0600 owned by relay-mqtt).
-3. Create user `relay-mqtt` in group `rackctl`; install the binary,
-   `relay-mqtt.service` and the config from `config.example.toml`. Enable it.
+3. Create user `relay-mqtt` in group `rackctl`; install the binary and the
+   config from `config.example.toml`, and register it as its own Phidget user
+   app (an `ua_<App>.conf` + `S2x<App>` pair like rack_controller's, enabled).
 4. Check: `rackctl status` shows `rack/sbc4/status` = `online` and all 8
    `rack/relay/<ch>/state` = `closed`.
 
-### SBC4 systemd swap (phase 2)
+### SBC4 controller swap (Phidget user app)
 
-Today `relay_controller.service` owns the hub. `rack_controller.service` has
-`Conflicts=relay_controller.service`, but do it explicitly; only one hub owner.
+The SBC4's controllers are **Phidget user apps**, not systemd units: the web
+UI's launcher (`phidgetsbc_ua.service` → `/etc/webif/init.d/S20<App>`, config
+`/etc/webif/ua_<App>.conf`) starts each enabled app once at boot, with stdout
+and stderr in `/tmp/<app_name>/`. Before the swap, `RelayController`
+(`relay_controller`) was enabled and `FanController` (`fan_control --static`)
+was enabled too, but it couldn't open the hub that relay_controller owned, so
+the fans and SSR weren't driven at all. rack_controller replaces both: exactly
+one hub owner.
+
+Done on 2026-11-21:
 
 1. Shut the whole rack down gracefully first:
-   `rackctl shutdown --no-relay all` and confirm every PC is ping-down. Stopping
+   `rack-shutdown --no-relay all` and confirm every PC is ping-down. Stopping
    relay_controller opens all 8 relays.
-2. Build `rack_controller` on the SBC4 (`make`), install the binary and
-   `rack_controller.service` next to where `relay_controller` lives
-   (`systemctl cat relay_controller` shows it).
-3. `systemctl disable --now relay_controller.service`
-4. `systemctl enable --now rack_controller.service`
-5. Make sure neither `relay_controller` nor `fan_control` is also registered in
-   the Phidget web UI's Startup Settings.
-6. rack_controller's blocking startup closes all 8 relays with the 2.5 s
-   stagger; PCs boot via AC recovery. `journalctl -u rack_controller` shows
-   every channel ON.
+2. Build on the SBC4: copy `sbc4/rack_controller/` (without `_src/`, `tests/`)
+   to `/usr/userapps/rack_controller/` and run `make` there.
+3. `groupadd -f rackctl`. rack_controller creates `/run/rack_controller/`
+   (0750) and `ctl.sock` (0660) itself, both `root:rackctl`; without the group
+   it warns and keeps them root-only.
+4. Back up and disable `FanController`: `app_enabled="false"` in
+   `/etc/webif/ua_FanController.conf` (backup `*.pre-rack`).
+5. Repoint the existing RelayController entry at rack_controller, in
+   `/etc/webif/ua_RelayController.conf` (backup `*.pre-rack`):
+   ```
+   app_name="rack_controller"
+   app_cmd="rack_controller"
+   app_args="--start-open"
+   app_enabled="true"
+   ```
+6. Stop the old one (`kill -TERM $(pidof relay_controller)`, which opens every
+   relay), then `/etc/webif/init.d/S20RelayController start`.
+7. Check: `pidof rack_controller`; `/tmp/rack_controller/stderr` shows the
+   fans and SSR attaching, `Channel N ... skipped: commanded open` for 0–7, and
+   `Control socket listening`; a `state` request over the socket lists 8 relays
+   `cmd=open`, fans `duty=0.50`, SSR `cmd=on`.
 
-Rollback: shut the rack down the same way, `systemctl disable --now
-rack_controller.service`, `systemctl enable --now relay_controller.service`.
+`--start-open` keeps every relay open so the PCs stay off for `map-verify` and
+an ordered `rack-up`. **After the first rack-up, set `app_args=""`** so a
+later SBC4 boot brings the relays back on as before.
+
+**No automatic restart:** the Phidget launcher starts the app once. If
+rack_controller crashes, nothing restarts it, and the hardware failsafe opens
+every relay about 1 s later, an **unclean power cut to every running PC**.
+Restart it by hand with `/etc/webif/init.d/S20RelayController start` (this
+power-cycles the relays).
+
+Rollback (rack shut down the same way): restore both `*.pre-rack` files, then
+`/etc/webif/init.d/S20RelayController stop` and `start`.
 
 Give the SBC4 a DHCP reservation for `192.168.8.165` on the Slate.
 

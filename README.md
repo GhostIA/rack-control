@@ -30,7 +30,7 @@ worst a broker compromise can do is power things off.
 | `slate/rackpki/` | dev box | not deployed; output in gitignored `slate/pki/` |
 | `pc-agent/` | each PC (5x Proxmox, amd64) | binary, `rack-agent.service`, polkit rule, `/etc/rack/` (via `pc-agent install`) |
 | `sbc4/relay-mqtt/` | SBC4 (192.168.8.165, armv7) | binary, `relay-mqtt.service`, `/etc/rack/` (phase 2) |
-| `sbc4/rack_controller/` | SBC4 | built on-device; `rack_controller.service` replaces `relay_controller.service` (phase 2) |
+| `sbc4/rack_controller/` | SBC4 | built on-device; Phidget user app (repointed `ua_RelayController.conf`), replaced relay_controller |
 
 ## Status
 

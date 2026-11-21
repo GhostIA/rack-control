@@ -11,6 +11,7 @@
 #include <thread>
 
 #include <fcntl.h>
+#include <grp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -806,6 +807,17 @@ void ConsumeInput(Controller& ctl, Client& c, const char* data, size_t n) {
 
 } // namespace
 
+// gid of the socket group, or -1 (with a warning) if it doesn't exist.
+gid_t SocketGroup() {
+    const group* g = getgrnam(kSocketGroup);
+    if (!g) {
+        std::fprintf(stderr, "WARN: group %s not found (groupadd %s); socket stays root-only\n",
+                     kSocketGroup, kSocketGroup);
+        return static_cast<gid_t>(-1);
+    }
+    return g->gr_gid;
+}
+
 SocketServer::SocketServer(Controller& ctl, std::string path, std::atomic<bool>& running)
     : ctl_(ctl), path_(std::move(path)), running_(running) {}
 
@@ -817,6 +829,28 @@ bool SocketServer::Bind() {
         return false;
     }
     std::memcpy(addr.sun_path, path_.c_str(), path_.size() + 1);
+
+    // The Phidget user-app launcher has no RuntimeDirectory: create the
+    // socket's parent dir (one level, e.g. /run/rack_controller) as 0750
+    // root:rackctl so only the rackctl group (relay-mqtt) can reach it.
+    const gid_t gid = SocketGroup();
+    const std::string dir = path_.substr(0, path_.find_last_of('/'));
+    if (!dir.empty() && dir != "/run" && dir != "/tmp") {
+        if (mkdir(dir.c_str(), 0750) != 0 && errno != EEXIST) {
+            std::fprintf(stderr, "ERROR: mkdir %s: %s\n", dir.c_str(), std::strerror(errno));
+            return false;
+        }
+        struct stat ds{};
+        if (lstat(dir.c_str(), &ds) != 0 || !S_ISDIR(ds.st_mode)) {
+            std::fprintf(stderr, "ERROR: %s is not a directory; not touching it\n", dir.c_str());
+            return false;
+        }
+        if (gid != static_cast<gid_t>(-1) && chown(dir.c_str(), 0, gid) != 0) {
+            std::fprintf(stderr, "WARN: chown %s to group %s: %s\n", dir.c_str(), kSocketGroup,
+                         std::strerror(errno));
+        }
+        chmod(dir.c_str(), 0750);
+    }
 
     // Replace a stale socket from a previous run, but never another file type.
     struct stat st{};
@@ -842,8 +876,12 @@ bool SocketServer::Bind() {
         close(fd);
         return false;
     }
-    // 0660 regardless of umask (the unit's UMask also gives 0660). The group
-    // is the service's Group=rackctl, so relay-mqtt can connect.
+    // 0660 regardless of umask, group rackctl (set here: the Phidget launcher
+    // runs us as root:root), so relay-mqtt can connect and nobody else can.
+    if (gid != static_cast<gid_t>(-1) && chown(path_.c_str(), 0, gid) != 0) {
+        std::fprintf(stderr, "WARN: chown %s to group %s: %s\n", path_.c_str(), kSocketGroup,
+                     std::strerror(errno));
+    }
     if (chmod(path_.c_str(), 0660) != 0 || listen(fd, 16) != 0 || !SetNonBlocking(fd)) {
         std::fprintf(stderr, "ERROR: setting up %s: %s\n", path_.c_str(), std::strerror(errno));
         close(fd);

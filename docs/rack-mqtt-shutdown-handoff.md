@@ -193,8 +193,8 @@ What the merge adds:
   1000 ms failsafe, reset every 1/3 of the failsafe time. (Earlier drafts of
   this doc said "non-blocking Phidget_open, attach-driven power-on" for relays;
   that was wrong. Only fans and SSR use `fan_control`'s dynamic attach model.)
-- A **Unix domain socket** at `/run/rack_controller/ctl.sock` (systemd
-  `RuntimeDirectory=rack_controller`, dir 0750, socket 0660, group `rackctl`).
+- A **Unix domain socket** at `/run/rack_controller/ctl.sock` (rack_controller creates
+  the dir 0750 and the socket 0660 itself, both `root:rackctl`).
   One ASCII request per line, at most 128 bytes, many requests per connection:
   - `open <ch>` -> set the relay FALSE (NO relay opens, PC off). Reply
     `ok open <ch>` or `err <reason>`.
@@ -302,9 +302,10 @@ Build to these. They replace the old "Still to confirm" and "OPEN" items.
 8. **Commanded relay state is not persisted.** rack_controller restart = all on.
 9. **Relays keep relay_controller's blocking startup**; only fans/SSR are
    attach-driven.
-10. **SBC4:** `relay_controller` currently runs as a systemd service; phase 2
-    ships `rack_controller.service` (`Conflicts=relay_controller.service`) and
-    `relay-mqtt.service`. HUB0004 serial 592109. SBC4 at 192.168.8.165 via DHCP:
+10. **SBC4:** the controllers are Phidget user apps (web UI launcher,
+    `/etc/webif/ua_*.conf`), not systemd units. rack_controller replaced
+    relay_controller in the existing `ua_RelayController.conf` entry (2026-11-21);
+    relay-mqtt gets its own user-app entry. They are started once, not restarted. HUB0004 serial 592109. SBC4 at 192.168.8.165 via DHCP:
     add a DHCP reservation.
 11. **C++ merge deferred to phase 2.** relay-mqtt needs it; until then use
     `--no-relay`.

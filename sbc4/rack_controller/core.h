@@ -29,6 +29,7 @@ constexpr int      kRelayCount        = 8;
 constexpr std::chrono::seconds kReopenRetry{5};  // tripped-channel reopen retry
 constexpr int      kRelayPorts[2]     = {3, 4};   // REL1000 x2: relay ch 0-3, 4-7
 const char* const  kDefaultSocket     = "/run/rack_controller/ctl.sock";
+const char* const  kSocketGroup       = "rackctl";   // socket + its dir: root:rackctl
 
 // ---- Channel model -----------------------------------------------------------
 enum class Kind { Relay, FanPwm, Ssr };

@@ -20,8 +20,8 @@ The SBC4 doesn't allow two processes to open channels on the same VINT hub, and
 relays, fans and SSR are all on HUB0004. So exactly one process may own the hub.
 
 - **Today:** `relay_controller` (from `rack_controller/_src/relay_controller.cpp`)
-  runs as the systemd service `relay_controller`. `fan_control` must not run
-  alongside it.
+  ran as the Phidget user app `RelayController`. `FanController`
+  (`fan_control`) was also enabled but couldn't open the shared hub.
 - **After phase 2:** `rack_controller` (the merge of both originals) is the only
   owner. `relay-mqtt` never opens Phidgets; it only talks to rack_controller's
   Unix socket, so it coexists.
@@ -40,8 +40,8 @@ heartbeat owns ports 2-5. Relays keep relay_controller's blocking startup
 
 ## Phase-2 status
 
-The merge is **done** in code: `rack_controller/` (`rack_controller.cpp`, `core.*`,
-the HAL headers, `Makefile`, `rack_controller.service`, tests). Its README has
+The merge is **done** and **deployed** (2026-11-21): `rack_controller/`
+(`rack_controller.cpp`, `core.*`, the HAL headers, `Makefile`, tests). Its README has
 the details: [rack_controller/README.md](rack_controller/README.md). It has
 been tested only against a fake HAL, and against relay-mqtt's real socket
 client (`make xcheck`). It has not run on hardware yet. Until the swap is done
@@ -49,12 +49,12 @@ on the SBC4, the old `relay_controller` still owns the hub, relays aren't
 MQTT-commandable, and `rackctl` runs with `--no-relay`. `_src/` stays the
 rollback baseline and is never edited.
 
-## systemd units
+## How they run (Phidget user apps, no systemd units)
 
-| unit | user | notes |
-|------|------|-------|
-| `relay_controller.service` | (existing) | runs today; disabled at the phase-2 swap |
-| `rack_controller.service` | root, group `rackctl` (hub access) | `Restart=always`, `Conflicts=relay_controller.service`, `RuntimeDirectory=rack_controller` (socket 0660, group `rackctl`) |
+| app | config | notes |
+|-----|--------|-------|
+| `rack_controller` | `/etc/webif/ua_RelayController.conf` (repointed), `S20RelayController` | root; creates `/run/rack_controller/` + `ctl.sock` as `root:rackctl` 0750/0660; started once, **not restarted** if it dies |
+| `FanController` | `ua_FanController.conf` | disabled: rack_controller owns the fans |
 | `relay-mqtt.service` | `relay-mqtt`, group `rackctl` | `After=rack_controller.service`, no `Requires=`; reconnects forever to broker and socket |
 
 Stopping or restarting the hub owner opens every relay (graceful exit or
@@ -64,7 +64,7 @@ doesn't touch the relays.
 
 The swap procedure (rack shut down first, `disable --now relay_controller`,
 then `enable --now rack_controller`) is in
-[../docs/DEPLOY.md](../docs/DEPLOY.md#sbc4-systemd-swap-phase-2).
+[../docs/DEPLOY.md](../docs/DEPLOY.md#sbc4-controller-swap-phidget-user-app).
 
 ## Build
 

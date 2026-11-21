@@ -22,7 +22,6 @@ edited.
 | `hal.h` | the thin HAL interface (no Phidget includes) |
 | `hal_phidget.h` | the real HAL: one-to-one Phidget22 calls |
 | `core.h`, `core.cpp` | unified `Channel{Kind}` model, mutex, heartbeat, stagger, commands, CLI, socket server |
-| `rack_controller.service` | systemd unit (replaces `relay_controller.service`) |
 | `tests/` | unit tests on a fake HAL, `test_server`, and the relay-mqtt cross-check |
 
 ## Behavior
@@ -30,7 +29,7 @@ edited.
 Startup, in order:
 
 1. **One create loop** for all 16 channels: serial, hub port, channel and the
-   attach/detach/error handlers. Any failure is fatal (`exit 1`; systemd restarts it).
+   attach/detach/error handlers. Any failure is fatal (`exit 1`). The Phidget launcher does not restart it.
 2. **One heartbeat thread** resets the failsafe on every armed channel of any
    kind, every failsafe-ms / 3 (333 ms by default).
 3. **Fans and SSR, as in fan_control:** non-blocking `open`, started first so
@@ -119,7 +118,7 @@ On the SBC4 (the only real build; needs `libphidget22`):
 
 ```
 make             # g++ -std=c++17 -O2 ... -lphidget22 -lpthread -o rack_controller
-sudo make install   # /usr/userapps/rack_controller/rack_controller + the unit (not enabled)
+sudo make install   # /usr/userapps/rack_controller/rack_controller
 ```
 
 ## Swap from relay_controller (rack shut down first)
@@ -127,22 +126,23 @@ sudo make install   # /usr/userapps/rack_controller/rack_controller + the unit (
 Any restart of the hub owner power-cycles every relay. Stopping it opens all 8,
 and the start staggers them all back on. So do this only with the rack already
 down. The full procedure is in
-[../../docs/DEPLOY.md](../../docs/DEPLOY.md#sbc4-systemd-swap-phase-2).
+[../../docs/DEPLOY.md](../../docs/DEPLOY.md#sbc4-controller-swap-phidget-user-app).
 
-1. `rackctl shutdown --no-relay all`, then confirm every PC is ping-down.
+1. `rack-shutdown --no-relay all`, then confirm every PC is ping-down.
 2. On the SBC4: `make && sudo make install`.
-3. Make sure group `rackctl` exists **before** starting the unit (`Group=rackctl`
-   fails otherwise): `groupadd -f rackctl`.
-4. `systemctl disable --now relay_controller.service`
-5. `systemctl daemon-reload && systemctl enable --now rack_controller.service`
-6. `journalctl -u rack_controller -f` shows `Channel 0..7 ... ON` 2.5 s apart,
-   the fans and SSR attaching, and `Control socket listening`.
-7. Neither `relay_controller` nor `fan_control` may be in the Phidget web UI's
-   Startup Settings.
+3. `groupadd -f rackctl` (rack_controller sets `/run/rack_controller/` and
+   `ctl.sock` to `root:rackctl` itself).
+4. Repoint `/etc/webif/ua_RelayController.conf` at rack_controller
+   (`app_name="rack_controller"`, `app_cmd="rack_controller"`, `app_args` empty
+   or `--start-open`, `app_enabled="true"`) and disable `ua_FanController.conf`.
+5. `kill -TERM $(pidof relay_controller)`, then
+   `/etc/webif/init.d/S20RelayController start`.
+6. `/tmp/rack_controller/stderr` shows the fans and SSR attaching, the relay
+   channels, and `Control socket listening`.
 
-Rollback: with the rack shut down the same way, run `systemctl disable --now
-rack_controller.service` and then `systemctl enable --now
-relay_controller.service`.
+There is no systemd unit: the Phidget user-app launcher starts it once and does
+not restart it. Rollback: restore the `*.pre-rack` copies of both ua configs and
+restart via `S20RelayController stop` and `start`.
 
 ## Untested on hardware
 

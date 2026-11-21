@@ -1,14 +1,14 @@
 # Merge brief: relay_controller + fan_control -> one rack_controller
 
-**Status: MERGED (code), not yet deployed.** `sbc4/rack_controller/` now
+**Status: MERGED and DEPLOYED on the SBC4 (2026-11-21) as a Phidget user app.** `sbc4/rack_controller/` now
 holds `rack_controller.cpp`, `core.h`/`core.cpp`, `hal.h`/`hal_phidget.h`,
-`Makefile`, `rack_controller.service` and `tests/`. See
+`Makefile` and `tests/` (it runs as a Phidget user app; no systemd unit). See
 [../sbc4/rack_controller/README.md](../sbc4/rack_controller/README.md). It was
 verified with `make test` (fake HAL, real AF_UNIX socket), `make check-mac`
 (Phidget22 headers) and `make xcheck` (relay-mqtt's real socket client and
 parser against this server). It has not run on hardware. The SBC4 keeps
 running the original `relay_controller` until the
-[swap](DEPLOY.md#sbc4-systemd-swap-phase-2). Whole-system spec:
+[swap](DEPLOY.md#sbc4-controller-swap-phidget-user-app). Whole-system spec:
 [rack-mqtt-shutdown-handoff.md](rack-mqtt-shutdown-handoff.md).
 
 ### Result vs. this brief
@@ -67,7 +67,7 @@ One binary, one process, owns ALL of HUB0004:
 - port 5    -> SSR (REL1100 on/off)
 
 Files: `rack_controller.cpp`, a thin HAL header separating the Phidget calls,
-`Makefile`, `rack_controller.service`, `tests/` (run on macOS against a fake
+`Makefile`, `tests/` (run on macOS against a fake
 HAL).
 
 ### Requirements
@@ -91,8 +91,8 @@ HAL).
 
 4. **Local Unix-socket control surface** (shared contract with the relay-mqtt
    sidecar):
-   - Path `/run/rack_controller/ctl.sock`; systemd
-     `RuntimeDirectory=rack_controller`, dir 0750, socket 0660, group `rackctl`.
+   - Path `/run/rack_controller/ctl.sock`; rack_controller creates the dir
+     (0750) and the socket (0660) itself, both `root:rackctl`.
    - One ASCII request per line, at most 128 bytes; one connection may send many
      requests.
    - `open <ch>` / `close <ch>`: relay ch 0-7 (0-3 = port 3 ch0-3, 4-7 = port 4
@@ -115,8 +115,8 @@ HAL).
    to their safe state (relays open = PCs off; fans duty 0; SSR off). All wired
    NORMALLY OPEN / fail-to-off. Keep the 1/3-failsafe-time reset cadence.
 
-7. **systemd unit** `rack_controller.service`: `Restart=always`,
-   `Conflicts=relay_controller.service`, `RuntimeDirectory=rack_controller`.
+7. **Phidget user app** (the existing `ua_RelayController.conf` repointed): no
+   systemd unit, started once at boot, not restarted on a crash.
 
 ### Do NOT
 
@@ -139,9 +139,9 @@ HAL).
 
 ### Deploy note
 
-- ONE binary, ONE systemd unit, owning the whole hub. The swap from
-  `relay_controller.service` to `rack_controller.service` cuts power to every
+- ONE binary, ONE Phidget user-app entry, owning the whole hub. The swap from
+  relay_controller to rack_controller cuts power to every
   PC, so it's done with the rack already shut down. Procedure:
-  [DEPLOY.md](DEPLOY.md#sbc4-systemd-swap-phase-2).
+  [DEPLOY.md](DEPLOY.md#sbc4-controller-swap-phidget-user-app).
 - `fan_control` must not run anywhere (unit or Startup Settings entry) once
   rack_controller owns the hub.

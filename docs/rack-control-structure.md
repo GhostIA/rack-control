@@ -23,7 +23,6 @@ rack-control/
 │   │   │                          #   NO MQTT / no network lib in the C++
 │   │   ├── *.h                    # thin HAL header (Phidget calls behind it)
 │   │   ├── Makefile               # rack_controller, test, check-mac
-│   │   ├── rack_controller.service  # Restart=always, Conflicts=relay_controller.service
 │   │   ├── tests/                 # macOS tests against a fake HAL
 │   │   └── _src/                  # the two ORIGINALS, rollback baseline (never edited):
 │   │       ├── relay_controller.cpp
@@ -102,7 +101,7 @@ phase 2.
 | `slate/rackpki/`       | dev box              | not deployed; writes `slate/pki/` |
 | `pc-agent/`            | each mini-PC         | binary, `rack-agent.service`, `/etc/polkit-1/rules.d/10-rack-poweroff.rules`, `/etc/rack/` (via `pc-agent install`) |
 | `sbc4/relay-mqtt/`     | SBC4 (192.168.8.165) | binary + `relay-mqtt.service`; `/etc/rack/` (phase 2) |
-| `sbc4/rack_controller/`| SBC4                 | built on-device; `rack_controller.service` replaces `relay_controller.service` (phase 2) |
+| `sbc4/rack_controller/`| SBC4                 | built on-device; Phidget user app (repointed `ua_RelayController.conf`), replaced relay_controller |
 
 NOTE: only ONE Phidget-opening process may run on the SBC4 (hub single-ownership).
 Today that's `relay_controller`; after phase 2 it's `rack_controller`. The

@@ -4,8 +4,8 @@ Homelab rack power control across 3 machine types: the GL.iNet Slate (broker +
 `rackctl`), the Phidget SBC4 (relays), and 5 Proxmox PCs (`pc-agent`).
 
 - Specs: docs/rack-mqtt-shutdown-handoff.md (whole system; its "Resolved
-  decisions" section is authoritative), docs/rack-controller-merge.md (phase 2,
-  deferred), docs/DEPLOY.md (order, runbooks, first live test).
+  decisions" section is authoritative), docs/rack-controller-merge.md (merged and
+  deployed as a Phidget user app), docs/DEPLOY.md (order, runbooks, first live test).
 - Languages: Rust for the daemons (pc-agent, sbc4/relay-mqtt), Go for the CLIs
   (slate/rackctl, slate/rackpki), C++ only in sbc4/rack_controller. No shell
   logic beyond one-line Makefile recipes.

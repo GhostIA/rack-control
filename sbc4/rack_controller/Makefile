@@ -4,7 +4,7 @@
 #   make check-mac  syntax-check the Phidget code against Phidget22.framework
 #   make xcheck     relay-mqtt's own client + parser against this socket server
 #                   (needs cargo; builds offline from the local cargo cache)
-#   make install    copy binary + unit into place on the SBC4 (does not enable)
+#   make install    copy the binary into /usr/userapps/rack_controller on the SBC4
 
 CXX       ?= g++
 CXXFLAGS  ?= -O2
@@ -49,7 +49,6 @@ xcheck: $(BUILD)/test_server
 install: rack_controller
 	install -d $(PREFIX)
 	install -m 0755 rack_controller $(PREFIX)/rack_controller
-	install -m 0644 rack_controller.service $(UNITDIR)/rack_controller.service
 
 clean:
 	rm -rf $(BUILD) rack_controller tests/client_xcheck/target
