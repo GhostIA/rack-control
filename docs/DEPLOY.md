@@ -234,8 +234,8 @@ since the mapping is still unverified. Channels 3, 5 and 7 aren't in the
 mapping, so a shutdown never opens them; they must be opened too before
 map-verify will run (see `slate/rackctl/` for how rackctl handles that).
 
-`rackctl map-verify` then, per channel 0-7: closes it, waits up to 180 s for a
-configured IP to answer, records it, shuts that PC down gracefully, and opens
+`rackctl map-verify` then, per channel 0-7 (or only `--channels 3,4,5,6,7`):
+closes it, waits up to 5 min (`--boot-timeout`) for a configured IP to answer, records it, shuts that PC down gracefully, and opens
 the relay again. Paste the printed TOML snippet into `/etc/rack/rack.toml` and
 back into `rack.example.toml` if it differs. Only after this is the mapping
 trusted.
