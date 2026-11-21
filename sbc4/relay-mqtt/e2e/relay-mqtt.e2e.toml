@@ -1,0 +1,10 @@
+# relay-mqtt config used inside the e2e compose network (test-only).
+host = "172.31.250.10"
+port = 8883
+ca_file = "/e2e/sbc4/ca.crt"
+cert_file = "/e2e/sbc4/sbc4.crt"
+key_file = "/e2e/sbc4/sbc4.key"
+username = "sbc4"
+password_file = "/e2e/sbc4/sbc4.password"
+socket = "/run/rack_controller/ctl.sock"
+keep_alive_secs = 10

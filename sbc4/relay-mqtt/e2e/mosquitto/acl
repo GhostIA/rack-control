@@ -1,0 +1,10 @@
+# Minimal test ACL: sbc4 exactly as in production; tester plays the orchestrator.
+user sbc4
+topic read rack/relay/+/set
+topic write rack/relay/+/state
+topic write rack/sbc4/status
+
+user tester
+topic write rack/relay/+/set
+topic read rack/relay/+/state
+topic read rack/sbc4/status

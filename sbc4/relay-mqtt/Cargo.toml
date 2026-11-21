@@ -1,0 +1,36 @@
+[package]
+name = "relay-mqtt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "MQTT <-> rack_controller Unix-socket bridge for the SBC4 relays"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "relay-mqtt"
+path = "src/main.rs"
+
+# Test-only stand-in for rack_controller's socket server (unit tests + e2e).
+[[bin]]
+name = "fake-controller"
+path = "src/bin/fake-controller.rs"
+
+# Test-only MQTT client driven by the docker e2e (e2e/).
+[[bin]]
+name = "e2e-check"
+path = "src/bin/e2e-check.rs"
+
+[dependencies]
+rumqttc = { version = "0.24.0", features = ["use-rustls"] }
+tokio = { version = "1.40", features = ["rt", "macros", "net", "time", "signal", "io-util", "sync"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8.19"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+lto = true
+strip = true
+panic = "abort"

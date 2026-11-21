@@ -1,0 +1,39 @@
+[Unit]
+Description=relay-mqtt: MQTT bridge to rack_controller relays
+# Ordering only. No Requires=: the sidecar must keep running (and reconnecting)
+# while rack_controller restarts, and must never take it down.
+After=network-online.target rack_controller.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay-mqtt
+Group=rackctl
+ExecStart=/usr/local/bin/relay-mqtt --config /etc/rack/relay-mqtt.toml
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+
+# Hardening. The socket in /run/rack_controller is reached via group rackctl.
+# connect() on a socket works under ProtectSystem=strict. Do NOT add a
+# ReadWritePaths/BindPaths for /run/rack_controller: rack_controller's
+# RuntimeDirectory is recreated on restart, and a bind mount would pin the old,
+# deleted directory so the sidecar could never reconnect.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/rack
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
