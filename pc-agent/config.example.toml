@@ -1,0 +1,34 @@
+# /etc/rack-agent/config.toml  (0640 root:rack-agent)
+# The same binary runs on all five hosts; only this file differs.
+# This example is rejected until `name` is set (the placeholder fails validation).
+
+# This host's name. It is the MQTT username, the client id and the topic
+# segment: rack/pc/<name>/cmd and rack/pc/<name>/status. Must match [a-z0-9-]+.
+name = "CHANGE-ME"            # e.g. "intel-d1babf"
+
+# Broker on the Slate (TLS only, IP SAN). Verification is always on.
+broker_host = "192.168.8.1"
+broker_port = 8883
+
+# TLS material and password. If omitted these default to:
+#   ca            = /etc/rack/tls/ca.crt
+#   cert          = /etc/rack/tls/<name>.crt
+#   key           = /etc/rack/tls/<name>.key
+#   password_file = /etc/rack/<name>.password
+# ca = "/etc/rack/tls/ca.crt"
+# cert = "/etc/rack/tls/intel-d1babf.crt"
+# key = "/etc/rack/tls/intel-d1babf.key"
+# password_file = "/etc/rack/intel-d1babf.password"
+
+# Only on intel-1ecbc8: also handle rack/ceph/maintenance/set (on|off) by
+# running `/usr/bin/ceph --id <ceph_id> osd set|unset noout|norebalance`.
+ceph_maintenance = false
+ceph_id = "rack-maint"
+# On Proxmox /etc/ceph/ceph.conf is a symlink into /etc/pve (root/www-data
+# only), so rack-agent can't read it. Point this at a readable copy holding
+# just the [global] fsid + mon_host; it is passed as `--conf <path>`.
+# ceph_conf = "/etc/rack-agent/ceph.conf"
+
+# true = log "would power off" and exit 0 instead of calling logind; never
+# runs ceph. For testing only.
+dry_run = false

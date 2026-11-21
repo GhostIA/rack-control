@@ -1,0 +1,4 @@
+/target/
+# The repo-root rule `pc-agent/config.*` (real per-host configs) would also hide
+# the example; re-include it. Real configs still stay ignored.
+!/config.example.toml

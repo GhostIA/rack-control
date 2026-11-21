@@ -1,0 +1,17 @@
+// /etc/polkit-1/rules.d/10-rack-poweroff.rules
+//
+// Lets the unprivileged `rack-agent` service user power the host off through
+// logind, and nothing else (no reboot, no suspend, no inhibitor override).
+//
+// Two action ids are needed: logind checks
+// "org.freedesktop.login1.power-off" when no other user is logged in, but
+// "org.freedesktop.login1.power-off-multiple-sessions" when other sessions are
+// active (for example an admin's SSH or console login). Without the second,
+// the shutdown would be refused exactly when someone is logged in.
+polkit.addRule(function (action, subject) {
+    if ((action.id == "org.freedesktop.login1.power-off" ||
+         action.id == "org.freedesktop.login1.power-off-multiple-sessions") &&
+        subject.user == "rack-agent") {
+        return polkit.Result.YES;
+    }
+});

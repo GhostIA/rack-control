@@ -1,0 +1,31 @@
+[package]
+name = "rack-agent"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Per-PC MQTT agent: powers this Proxmox host off on the exact payload `shutdown`"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "rack-agent"
+path = "src/main.rs"
+
+[dependencies]
+rumqttc = { version = "0.24.0", features = ["use-rustls"] }
+tokio = { version = "1.40", features = ["rt", "macros", "net", "time", "signal", "io-util", "sync"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8.19"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+zbus = { version = "4.4.0", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["rt", "macros", "time", "test-util"] }
+
+[profile.release]
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1
