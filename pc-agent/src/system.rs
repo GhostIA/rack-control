@@ -1,9 +1,10 @@
 //! Production implementations of `PowerOff` and `CephRunner`.
 
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use tokio::process::Command;
 
 use crate::agent::{CephRunner, PowerOff, CEPH_BIN};
 
@@ -37,34 +38,29 @@ pub struct CephCli {
 
 impl CephRunner for CephCli {
     async fn run(&mut self, args: &[String]) -> Result<()> {
-        let args = args.to_vec();
-        let limit = self.timeout;
-        tokio::task::spawn_blocking(move || run_blocking(CEPH_BIN, &args, limit))
-            .await
-            .context("ceph task panicked")?
+        run_with_timeout(CEPH_BIN, args, self.timeout).await
     }
 }
 
-fn run_blocking(program: &str, args: &[String], limit: Duration) -> Result<()> {
+async fn run_with_timeout(program: &str, args: &[String], limit: Duration) -> Result<()> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("spawning {program}"))?;
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().context("waiting for ceph")? {
-            if status.success() {
-                return Ok(());
+    match tokio::time::timeout(limit, child.wait()).await {
+        Ok(status) => {
+            let status = status.context("waiting for ceph")?;
+            if !status.success() {
+                bail!("{program} exited with {status}");
             }
-            bail!("{program} exited with {status}");
+            Ok(())
         }
-        if start.elapsed() >= limit {
-            let _ = child.kill();
-            let _ = child.wait();
+        Err(_) => {
+            let _ = child.kill().await;
             bail!("{program} timed out after {limit:?}");
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -72,14 +68,20 @@ fn run_blocking(program: &str, args: &[String], limit: Duration) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn run_blocking_reports_status_and_timeout() {
-        assert!(run_blocking("/usr/bin/true", &[], Duration::from_secs(5)).is_ok());
-        assert!(run_blocking("/usr/bin/false", &[], Duration::from_secs(5)).is_err());
-        let e = run_blocking("/bin/sleep", &["5".into()], Duration::from_millis(200))
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_with_timeout_reports_status_and_timeout() {
+        let t = Duration::from_secs(5);
+        assert!(run_with_timeout("/usr/bin/true", &[], t).await.is_ok());
+        assert!(run_with_timeout("/usr/bin/false", &[], t).await.is_err());
+        let e = run_with_timeout("/bin/sleep", &["5".into()], Duration::from_millis(200))
+            .await
             .unwrap_err()
             .to_string();
         assert!(e.contains("timed out"), "{e}");
-        assert!(run_blocking("/nonexistent/ceph", &[], Duration::from_secs(1)).is_err());
+        assert!(
+            run_with_timeout("/nonexistent/ceph", &[], Duration::from_secs(1))
+                .await
+                .is_err()
+        );
     }
 }

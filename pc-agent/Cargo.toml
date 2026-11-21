@@ -12,8 +12,11 @@ name = "rack-agent"
 path = "src/main.rs"
 
 [dependencies]
-rumqttc = { version = "0.24.0", features = ["use-rustls"] }
-tokio = { version = "1.40", features = ["rt", "macros", "net", "time", "signal", "io-util", "sync"] }
+# Eclipse Paho (MQTT C library + Rust wrapper). `bundled` builds Paho C with
+# cmake and `vendored-ssl` builds OpenSSL from source, both linked statically.
+# Paho is EPL-2.0 / EDL-1.0 (BSD-3-Clause); OpenSSL 3 is Apache-2.0.
+paho-mqtt = { version = "=0.14.0", default-features = false, features = ["bundled", "ssl", "vendored-ssl"] }
+tokio = { version = "1.40", features = ["rt", "macros", "time", "signal", "sync", "process"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8.19"
 anyhow = "1"
@@ -22,7 +25,9 @@ env_logger = "0.11"
 zbus = { version = "4.4.0", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
-tokio = { version = "1.40", features = ["rt", "macros", "time", "test-util", "rt-multi-thread"] }
+# Embedded MQTT broker for the adapter tests (real Paho client on 127.0.0.1).
+rumqttd = { version = "=0.20.0", default-features = false }
+tokio = { version = "1.40", features = ["rt", "macros", "time", "test-util", "rt-multi-thread", "net", "io-util"] }
 
 [profile.release]
 lto = true

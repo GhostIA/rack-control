@@ -1,7 +1,8 @@
 # Builds the agent natively for the Docker host's arch (musl via Alpine) for
 # the e2e run only. The release x86_64 binary comes from `make`.
 FROM rust:1.85-alpine AS build
-RUN apk add --no-cache musl-dev
+# cmake/make/perl/g++: paho-mqtt builds Paho C and OpenSSL from source.
+RUN apk add --no-cache musl-dev cmake make perl g++ linux-headers
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rack-agent.service config.example.toml ./
 COPY polkit polkit
