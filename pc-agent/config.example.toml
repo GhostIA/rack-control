@@ -32,3 +32,7 @@ ceph_id = "rack-maint"
 # true = log "would power off" and exit 0 instead of calling logind; never
 # runs ceph. For testing only.
 dry_run = false
+
+# Log filter in RUST_LOG syntax, e.g. "debug" or "info,rack_agent::mqtt=debug".
+# If unset, RUST_LOG (the unit sets info) is used, then "info".
+# log_level = "info"

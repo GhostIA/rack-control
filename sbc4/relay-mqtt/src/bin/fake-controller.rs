@@ -8,10 +8,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use relay_mqtt::fake_controller::{bind, run, FakeState, Shared};
+use relay_mqtt::logging;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let _ = logging::init(&logging::directives(None));
+    let code = serve().await;
+    logging::flush();
+    code
+}
+
+async fn serve() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let mut path: Option<PathBuf> = None;
     let mut state = FakeState::default();

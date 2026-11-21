@@ -113,8 +113,54 @@ The sidecar never opens Phidget devices, so it coexists with the single hub owne
 
 `/etc/rack/relay-mqtt.toml` (see `config.example.toml`; every key is optional and the
 defaults are the production values): `host`, `port`, `ca_file`, `cert_file`, `key_file`,
-`username`, `password_file`, `socket`, `keep_alive_secs`. Unknown keys are rejected.
-`RUST_LOG` controls log verbosity (default `info`, logs go to the journal).
+`username`, `password_file`, `socket`, `keep_alive_secs`, `log_level`. Unknown keys are
+rejected.
+
+The file is loaded with [figment](https://docs.rs/figment/0.10): built-in defaults, then
+the TOML file, then environment overrides. A missing or unreadable file is an error, and
+so is a bad value. The process then exits 2. Errors print the whole context chain and name
+the file and the key, e.g.
+
+```
+in /etc/rack/relay-mqtt.toml: parse config: unknown field: found `hots`, expected ... for key "default.hots" in TOML source string
+```
+
+Every key can be overridden by `RELAY_MQTT_<KEY>` (upper case), e.g.
+`RELAY_MQTT_KEEP_ALIVE_SECS=10` or `RELAY_MQTT_LOG_LEVEL=debug`. Only the keys above are
+read this way, so other `RELAY_MQTT_*` variables are ignored. Overrides are validated like
+the file.
+
+### Logging
+
+Logs go through [fast_log](https://docs.rs/fast_log/1.7) (a writer thread) to stderr, as
+`[2026-11-21T12:00:00Z INFO  relay_mqtt::worker] ...`. That is `/tmp/<app_name>/stderr`
+under the Phidget launcher, or the journal under the systemd unit. The filter uses
+`RUST_LOG` syntax. It comes from `log_level` (or `RELAY_MQTT_LOG_LEVEL`) if set, otherwise
+from `RUST_LOG`, otherwise `info`. The Phidget launcher sets no `RUST_LOG`, so the config
+key is the way to change it there. To see why each broker reconnect fails, use
+`log_level = "info,paho_mqtt::c_trace=debug"`, which enables Paho C's trace. Paho reads
+the level once, when the client is created, so restart after changing it. The log is
+flushed before every exit (error, SIGTERM) and in the panic hook. Each flush waits at
+most 2 s.
+
+### Panics
+
+Panics use [human-panic](https://docs.rs/human-panic/2.0). The release build has
+`panic = "abort"`. The hook runs before the abort and does three things: it flushes the
+log, prints `relay-mqtt <version>: panicked at <file:line>: <message>` to stderr, and
+then human-panic prints its notice with the path of a TOML crash report
+(`report-<uuid>.toml`, with the message, location, OS and backtrace) in the temp dir
+(`$TMPDIR`, else `/tmp`):
+
+- **Phidget launcher** (root or the `relay-mqtt` user): `/tmp/report-<uuid>.toml`, next
+  to `/tmp/<app_name>/stderr`, which holds the panic message. The launcher does not
+  restart the app, so both stay until the SBC4 reboots.
+- **systemd unit** (`PrivateTmp=yes`): the service's private `/tmp`, i.e.
+  `/tmp/systemd-private-*-relay-mqtt.service-*/tmp/` on the host. systemd removes it
+  when the unit stops, so use `journalctl -u relay-mqtt` for the message.
+
+`RUST_BACKTRACE=1` switches back to Rust's default panic output (message and backtrace on
+stderr, no report).
 
 ## Tests
 
@@ -132,7 +178,13 @@ defaults are the production values): `host`, `port`, `ca_file`, `cert_file`, `ke
   127.0.0.1: online + 8 states, retained and invalid commands ignored, a command applied;
   and, through a loopback proxy that cuts the connection, the LWT `offline`, Paho's
   automatic reconnect, re-subscribe, `online` and a full re-sync. TLS itself is only
-  exercised by the docker e2e.
+  exercised by the docker e2e. The config tests cover unknown keys, a missing file,
+  defaults, the example, `RELAY_MQTT_*` overrides and the `{:#}` chain. The logging test
+  uses a slow sink that must hold the last line once `flush` returns.
+  `tests/panic_hook.rs` runs the debug binary. With `--panic-test` (debug builds only),
+  it checks the flushed log line, the panic message on stderr and the human-panic
+  report. It also checks that a broken config, a missing config and a bad argument exit 2
+  with the chained error.
 - `make e2e` (needs Docker) runs `e2e/`. A Rust runner generates throwaway test PKI and
   a mosquitto `passwd` into `e2e/work/` (gitignored, deleted afterwards) and vendors the
   crate dependencies. It then drives `docker compose` with an `eclipse-mosquitto:2.0.20`

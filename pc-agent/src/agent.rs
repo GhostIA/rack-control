@@ -258,9 +258,13 @@ impl<P: Publisher, O: PowerOff, C: CephRunner> Agent<P, O, C> {
             info!("dry_run: would power off (logind PowerOff(false)); exiting 0");
             return Outcome::Exit;
         }
+        // The log is written asynchronously, and the host goes down right
+        // after this: get the lines so far, and the result, to journald.
+        flush_log().await;
         match self.power.power_off().await {
             Ok(()) => {
                 info!("logind PowerOff requested; waiting for systemd to stop us");
+                flush_log().await;
                 Outcome::Continue
             }
             Err(e) => {
@@ -313,6 +317,12 @@ impl<P: Publisher, O: PowerOff, C: CephRunner> Agent<P, O, C> {
             Err(e) => warn!("publishing {CEPH_STATE_TOPIC}={state} failed: {e:#}"),
         }
     }
+}
+
+/// [`crate::logging::flush`] off the async thread, so a slow stderr cannot
+/// stall the runtime (MQTT events, SIGTERM) while it waits.
+async fn flush_log() {
+    let _ = tokio::task::spawn_blocking(crate::logging::flush).await;
 }
 
 #[cfg(test)]

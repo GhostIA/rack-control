@@ -19,3 +19,8 @@ password_file = "/etc/rack/sbc4.password"
 socket = "/run/rack_controller/ctl.sock"
 
 keep_alive_secs = 30
+
+# Log filter in RUST_LOG syntax. Unset by default: then RUST_LOG is used, then "info".
+# "info,paho_mqtt::c_trace=debug" also logs the Paho C library's trace (e.g. why
+# each reconnect attempt failed).
+# log_level = "info"

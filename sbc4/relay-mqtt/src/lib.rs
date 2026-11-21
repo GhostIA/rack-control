@@ -6,6 +6,7 @@ pub mod bridge;
 pub mod config;
 pub mod controller;
 pub mod fake_controller;
+pub mod logging;
 pub mod mqtt;
 pub mod protocol;
 pub mod worker;
