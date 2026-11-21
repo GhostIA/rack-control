@@ -35,6 +35,8 @@ type Orchestrator struct {
 	UpTimeout        time.Duration // per host, close -> first ping reply
 	MapUpTimeout     time.Duration // map-verify: close -> any IP answers
 	MapOnlineTimeout time.Duration // map-verify: wait for agent "online"
+	// MapChannels limits map-verify to these relay channels (nil = 0-7).
+	MapChannels []int
 }
 
 // New returns an Orchestrator with the production tunables.
@@ -51,7 +53,7 @@ func New(cfg *config.Config, bus Bus, p Pinger, clk Clock, out io.Writer, dry bo
 		RelayTimeout:     10 * time.Second,
 		UpStagger:        5 * time.Second,
 		UpTimeout:        300 * time.Second,
-		MapUpTimeout:     180 * time.Second,
+		MapUpTimeout:     300 * time.Second,
 		MapOnlineTimeout: 120 * time.Second,
 	}
 }

@@ -330,8 +330,12 @@ func (o *Orchestrator) MapVerify(ctx context.Context) (map[int]string, error) {
 		return nil, err
 	}
 
+	channels := o.mapChannels()
+	if len(channels) < 8 {
+		o.logf("testing only channels %v", channels)
+	}
 	found := map[int]string{}
-	for ch := 0; ch < 8; ch++ {
+	for _, ch := range channels {
 		o.logf("channel %d: closing relay", ch)
 		mark := o.mark()
 		if err := o.publish(ctx, TopicRelaySet(ch), "close"); err != nil {
@@ -410,6 +414,14 @@ func (o *Orchestrator) MapVerify(ctx context.Context) (map[int]string, error) {
 		return found, nil
 	}
 	return found, o.printMapping(found)
+}
+
+// mapChannels returns the channels map-verify tests, in order.
+func (o *Orchestrator) mapChannels() []int {
+	if len(o.MapChannels) == 0 {
+		return []int{0, 1, 2, 3, 4, 5, 6, 7}
+	}
+	return o.MapChannels
 }
 
 func ipList(pcs []config.PC) []string {
@@ -527,8 +539,14 @@ func (o *Orchestrator) printMapping(found map[int]string) error {
 		byName[n] = ch
 	}
 	o.logf("")
+	channels := o.mapChannels()
+	partial := len(channels) < 8
+	tested := map[int]bool{}
+	for _, ch := range channels {
+		tested[ch] = true
+	}
 	o.logf("verified relay mapping:")
-	for ch := 0; ch < 8; ch++ {
+	for _, ch := range channels {
 		n := found[ch]
 		if n == "" {
 			n = "(none)"
@@ -540,6 +558,13 @@ func (o *Orchestrator) printMapping(found map[int]string) error {
 	b.WriteString("# ---- verified by rackctl map-verify; paste over the [[pc]] tables ----\n")
 	for _, p := range o.Cfg.Ordered() {
 		ch, ok := byName[p.Name]
+		if !ok && partial {
+			if tested[p.Relay] {
+				problems = append(problems, fmt.Sprintf("%s: config says relay %d, but nothing booted there", p.Name, p.Relay))
+			}
+			fmt.Fprintf(&b, "# %s (%s): not seen on the tested channels\n\n", p.Name, p.IP)
+			continue
+		}
 		if !ok {
 			fmt.Fprintf(&b, "# %s (%s): did NOT come up on any channel\n\n", p.Name, p.IP)
 			problems = append(problems, p.Name+" not found on any channel")

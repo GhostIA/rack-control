@@ -651,3 +651,49 @@ func TestValidState(t *testing.T) {
 		}
 	}
 }
+
+func TestMapVerifyOnlySelectedChannels(t *testing.T) {
+	s := newSim(t)
+	s.rackOff()
+	s.wiring = map[int]string{0: "intel-91c45d", 1: "intel-177e78", 2: "intel-d1babf", 4: "intel-a163f8", 6: "intel-1ecbc8"}
+	o, out := s.orch()
+	o.MapChannels = []int{3, 4, 5, 6, 7}
+	found, err := o.MapVerify(context.Background())
+	if err != nil {
+		t.Fatalf("partial run with matching config failed: %v\n%s", err, out)
+	}
+	if len(found) != 2 || found[4] != "intel-a163f8" || found[6] != "intel-1ecbc8" {
+		t.Fatalf("found %v\n%s", found, out)
+	}
+	for _, p := range s.pubsMatching(func(e event) bool { return e.payload == "close" }) {
+		for _, ch := range []int{0, 1, 2} {
+			if p.topic == TopicRelaySet(ch) {
+				t.Fatalf("untested channel %d was closed", ch)
+			}
+		}
+	}
+	if strings.Contains(out.String(), "did NOT come up") {
+		t.Fatalf("partial run reported untested PCs as missing:\n%s", out)
+	}
+}
+
+func TestMapVerifyPartialFlagsWrongConfiguredRelay(t *testing.T) {
+	s := newSim(t)
+	s.rackOff()
+	// config says a163f8 is on 4, but 4 is empty and it's really on 5.
+	s.wiring = map[int]string{5: "intel-a163f8", 6: "intel-1ecbc8"}
+	o, out := s.orch()
+	o.MapChannels = []int{4, 5, 6}
+	_, err := o.MapVerify(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "intel-a163f8") {
+		t.Fatalf("want a163f8 mismatch, got %v\n%s", err, out)
+	}
+}
+
+func TestMapUpTimeoutDefaultIsFiveMinutes(t *testing.T) {
+	s := newSim(t)
+	o, _ := s.orch()
+	if o.MapUpTimeout != 5*time.Minute {
+		t.Fatalf("MapUpTimeout = %s", o.MapUpTimeout)
+	}
+}
