@@ -66,7 +66,10 @@ pub fn create_client(uri: &str, client_id: &str) -> Result<paho::AsyncClient> {
 
 /// TLS: our CA only (no system trust store), server certificate verification
 /// on, host/IP verification on (Paho checks an IP `broker_host` against the
-/// certificate's IP SANs via `X509_check_ip_asc`), TLS 1.2, client cert + key.
+/// certificate's IP SANs via `X509_check_ip_asc`), TLS 1.2 or 1.3, client cert + key.
+/// No `ssl_version`: with OpenSSL >= 1.1 Paho uses TLS_client_method() and ignores
+/// it; the vendored OpenSSL 3's default security level refuses TLS 1.0/1.1 and
+/// TLS 1.3 stays allowed (the broker also requires >= 1.2).
 pub fn tls_options(cfg: &Config) -> Result<paho::SslOptions> {
     // Paho only opens these at connect time, with vague errors; fail early.
     for p in [&cfg.ca, &cfg.cert, &cfg.key] {
@@ -85,7 +88,6 @@ pub fn tls_options(cfg: &Config) -> Result<paho::SslOptions> {
         .disable_default_trust_store(true)
         .enable_server_cert_auth(true)
         .verify(true)
-        .ssl_version(paho::SslVersion::Tls_1_2)
         .finalize())
 }
 

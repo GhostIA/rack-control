@@ -15,7 +15,7 @@ boot. A duplicate `shutdown` is ignored once a power-off has been requested.
 Message content is never executed or used as an argument.
 
 MQTT uses the Eclipse Paho client (`paho-mqtt` 0.14.0, which wraps the Paho
-C library 1.3.16). It connects with TLS 1.2 to `ssl://broker_host:broker_port`.
+C library 1.3.16). It connects with TLS 1.2 or 1.3 (OpenSSL 3 default security level; Paho ignores its own version option) to `ssl://broker_host:broker_port`.
 Only the configured CA is trusted, the server certificate is always verified,
 and the host is checked too: an IP `broker_host` must match an IP SAN. It
 authenticates with a client certificate plus a password. Username and client id
