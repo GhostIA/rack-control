@@ -17,36 +17,52 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use paho_mqtt as paho;
 use relay_mqtt::config::parse_password;
-use rumqttc::{
-    AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS, TlsConfiguration, Transport,
-};
 use tokio::time::{timeout, Instant};
 
 type Seen = BTreeMap<String, (String, bool)>;
 
-fn client(host: &str, dir: &Path, id: &str) -> Result<(AsyncClient, EventLoop)> {
-    let rd = |f: &str| std::fs::read(dir.join(f)).with_context(|| format!("read {f}"));
-    let pw = parse_password(&String::from_utf8(rd("tester.password")?)?)?;
-    let mut o = MqttOptions::new(id, host, 8883);
-    o.set_credentials("tester", pw);
-    o.set_clean_session(true);
-    o.set_keep_alive(Duration::from_secs(10));
-    o.set_transport(Transport::tls_with_config(TlsConfiguration::Simple {
-        ca: rd("ca.crt")?,
-        alpn: None,
-        client_auth: Some((rd("tester.crt")?, rd("tester.key")?)),
-    }));
-    Ok(AsyncClient::new(o, 32))
+struct Client {
+    cli: paho::AsyncClient,
+    rx: paho::AsyncReceiver<Option<paho::Message>>,
 }
 
-/// Poll until connected, retrying while the broker comes up.
-async fn connect(el: &mut EventLoop) -> Result<()> {
+fn client(host: &str, dir: &Path, id: &str) -> Result<(Client, paho::ConnectOptions)> {
+    let path = |f: &str| dir.join(f);
+    let pw = parse_password(
+        &std::fs::read_to_string(path("tester.password")).context("read tester.password")?,
+    )?;
+    let ssl = paho::SslOptionsBuilder::new()
+        .trust_store(path("ca.crt"))?
+        .key_store(path("tester.crt"))?
+        .private_key(path("tester.key"))?
+        .disable_default_trust_store(true)
+        .enable_server_cert_auth(true)
+        .verify(true)
+        .finalize();
+    let opts = paho::ConnectOptionsBuilder::with_mqtt_version(paho::MQTT_VERSION_3_1_1)
+        .user_name("tester")
+        .password(pw)
+        .clean_session(true)
+        .keep_alive_interval(Duration::from_secs(10))
+        .ssl_options(ssl)
+        .finalize();
+    let mut cli = paho::CreateOptionsBuilder::new_v3()
+        .server_uri(relay_mqtt::mqtt::ssl_uri(host, 8883))
+        .client_id(id)
+        .persistence(paho::PersistenceType::None)
+        .create_client()?;
+    let rx = cli.get_stream(256);
+    Ok((Client { cli, rx }, opts))
+}
+
+/// Connect, retrying while the broker comes up.
+async fn connect(c: &Client, opts: paho::ConnectOptions) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        match el.poll().await {
-            Ok(Event::Incoming(Packet::ConnAck(_))) => return Ok(()),
-            Ok(_) => {}
+        match c.cli.connect(opts.clone()).await {
+            Ok(_) => return Ok(()),
             Err(e) if Instant::now() < deadline => {
                 eprintln!("connect: {e}; retrying");
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -56,25 +72,42 @@ async fn connect(el: &mut EventLoop) -> Result<()> {
     }
 }
 
+async fn publish(c: &Client, topic: &str, payload: &str, retained: bool) -> Result<()> {
+    let m = paho::MessageBuilder::new()
+        .topic(topic)
+        .payload(payload)
+        .qos(1)
+        .retained(retained)
+        .finalize();
+    timeout(Duration::from_secs(10), c.cli.publish(m))
+        .await
+        .with_context(|| format!("publish {topic}: no PUBACK"))?
+        .with_context(|| format!("publish {topic}"))?;
+    Ok(())
+}
+
 /// Collect publishes for `dur`, or until `done(seen)` holds.
-async fn collect(el: &mut EventLoop, seen: &mut Seen, dur: Duration, done: impl Fn(&Seen) -> bool) {
+async fn collect(c: &Client, seen: &mut Seen, dur: Duration, done: impl Fn(&Seen) -> bool) {
     let deadline = Instant::now() + dur;
     while !done(seen) {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return;
         }
-        match timeout(left, el.poll()).await {
+        match timeout(left, c.rx.recv()).await {
             Err(_) => return,
-            Ok(Ok(Event::Incoming(Packet::Publish(p)))) => {
-                let v = String::from_utf8_lossy(&p.payload).into_owned();
-                println!("  recv {} = {v:?} retain={}", p.topic, p.retain);
-                seen.insert(p.topic, (v, p.retain));
+            Ok(Ok(Some(m))) => {
+                let v = String::from_utf8_lossy(m.payload()).into_owned();
+                println!("  recv {} = {v:?} retain={}", m.topic(), m.retained());
+                seen.insert(m.topic().to_string(), (v, m.retained()));
             }
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                eprintln!("poll: {e}");
+            Ok(Ok(None)) => {
+                eprintln!("connection lost");
                 tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Ok(Err(e)) => {
+                eprintln!("stream: {e}");
+                return;
             }
         }
     }
@@ -89,38 +122,23 @@ fn all_states(seen: &Seen) -> bool {
 }
 
 async fn seed(host: &str, dir: &Path) -> Result<()> {
-    let (c, mut el) = client(host, dir, "tester-seed")?;
-    connect(&mut el).await?;
-    c.publish("rack/relay/5/set", QoS::AtLeastOnce, true, "open")
-        .await?;
-    // Drive the loop until the PUBACK.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match timeout(
-            deadline.saturating_duration_since(Instant::now()),
-            el.poll(),
-        )
-        .await
-        {
-            Ok(Ok(Event::Incoming(Packet::PubAck(_)))) => break,
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => bail!("seed publish: {e}"),
-            Err(_) => bail!("seed publish not acknowledged"),
-        }
-    }
+    let (c, opts) = client(host, dir, "tester-seed")?;
+    connect(&c, opts).await?;
+    // Wait for the PUBACK.
+    publish(&c, "rack/relay/5/set", "open", true).await?;
     println!("seeded retained rack/relay/5/set=open");
     Ok(())
 }
 
 async fn check(host: &str, dir: &Path) -> Result<()> {
-    let (c, mut el) = client(host, dir, "tester-check")?;
-    connect(&mut el).await?;
-    c.subscribe("rack/relay/+/state", QoS::AtLeastOnce).await?;
-    c.subscribe("rack/sbc4/status", QoS::AtLeastOnce).await?;
+    let (c, opts) = client(host, dir, "tester-check")?;
+    connect(&c, opts).await?;
+    c.cli.subscribe("rack/relay/+/state", 1).await?;
+    c.cli.subscribe("rack/sbc4/status", 1).await?;
 
     println!("waiting for sidecar online + initial 8 states");
     let mut seen = Seen::new();
-    collect(&mut el, &mut seen, Duration::from_secs(90), |s| {
+    collect(&c, &mut seen, Duration::from_secs(90), |s| {
         val(s, "rack/sbc4/status") == Some("online") && all_states(s)
     })
     .await;
@@ -138,35 +156,31 @@ async fn check(host: &str, dir: &Path) -> Result<()> {
 
     println!("sending invalid commands");
     seen.clear();
-    c.publish("rack/relay/9/set", QoS::AtLeastOnce, false, "open")
-        .await?;
-    c.publish("rack/relay/4/set", QoS::AtLeastOnce, false, "OPEN")
-        .await?;
-    c.publish("rack/relay/4/set", QoS::AtLeastOnce, false, "open\n")
-        .await?;
-    collect(&mut el, &mut seen, Duration::from_secs(3), |_| false).await;
+    publish(&c, "rack/relay/9/set", "open", false).await?;
+    publish(&c, "rack/relay/4/set", "OPEN", false).await?;
+    publish(&c, "rack/relay/4/set", "open\n", false).await?;
+    collect(&c, &mut seen, Duration::from_secs(3), |_| false).await;
     if !seen.is_empty() {
         bail!("invalid commands produced publishes: {seen:?}");
     }
 
     println!("sending rack/relay/3/set=open");
-    c.publish("rack/relay/3/set", QoS::AtLeastOnce, false, "open")
-        .await?;
-    collect(&mut el, &mut seen, Duration::from_secs(15), |s| {
+    publish(&c, "rack/relay/3/set", "open", false).await?;
+    collect(&c, &mut seen, Duration::from_secs(15), |s| {
         val(s, "rack/relay/3/state") == Some("open")
     })
     .await;
     if val(&seen, "rack/relay/3/state") != Some("open") {
         bail!("no rack/relay/3/state=open: {seen:?}");
     }
-    let _ = c.disconnect().await;
+    let _ = c.cli.disconnect(None).await;
 
     println!("verifying retained state on a fresh connection");
-    let (c2, mut el2) = client(host, dir, "tester-verify")?;
-    connect(&mut el2).await?;
-    c2.subscribe("rack/relay/#", QoS::AtLeastOnce).await?;
+    let (c2, opts2) = client(host, dir, "tester-verify")?;
+    connect(&c2, opts2).await?;
+    c2.cli.subscribe("rack/relay/#", 1).await?;
     let mut ret = Seen::new();
-    collect(&mut el2, &mut ret, Duration::from_secs(3), |_| false).await;
+    collect(&c2, &mut ret, Duration::from_secs(3), |_| false).await;
     match ret.get("rack/relay/3/state") {
         Some((v, true)) if v == "open" => {}
         other => bail!("rack/relay/3/state not retained open: {other:?}"),

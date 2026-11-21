@@ -1,6 +1,7 @@
 # relay-mqtt: SBC4 (armv7l) release build + checks.
-#   make            cross-build with cargo-zigbuild (brew install zig; cargo install cargo-zigbuild;
-#                   rustup target add armv7-unknown-linux-musleabihf)
+#   make            cross-build with cargo-zigbuild (brew install zig cmake; cargo install cargo-zigbuild;
+#                   rustup target add armv7-unknown-linux-musleabihf). paho-mqtt builds the Paho C
+#                   library (cmake) and OpenSSL (perl + make) from source and links both statically.
 #   make docker     same build inside a musl cross image, no network, no host toolchain
 #   make check      fmt + clippy + unit/socket tests (host)
 #   make e2e        docker compose e2e (broker + fake controller + sidecar), see e2e/

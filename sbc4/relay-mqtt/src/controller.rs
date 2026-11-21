@@ -4,10 +4,12 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use anyhow::{anyhow, Result};
+use futures_util::{SinkExt, StreamExt};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
+use tokio_util::bytes::BytesMut;
+use tokio_util::codec::{Decoder, Encoder, Framed, LinesCodec, LinesCodecError};
 
 /// Longest reply line accepted from the controller (requests are <=128 bytes;
 /// replies are short too). Longer lines are a protocol error.
@@ -45,41 +47,71 @@ pub trait Controller {
     fn reset(&mut self);
 }
 
-/// Read one `\n`-terminated line of at most `max` bytes. `Ok(None)` on clean
-/// EOF before any byte. The newline is stripped; a line that is not valid
-/// UTF-8, too long, or cut off by EOF is an error.
-pub async fn read_line_bounded<R>(reader: &mut R, max: usize) -> Result<Option<String>>
-where
-    R: AsyncBufRead + Unpin,
-{
-    let mut buf = Vec::new();
-    let n = reader
-        .take(max as u64 + 1)
-        .read_until(b'\n', &mut buf)
-        .await?;
-    if n == 0 {
-        return Ok(None);
+/// Line framing for the controller socket, in both directions.
+///
+/// It is `tokio_util`'s [`LinesCodec`] with a length limit (a longer line is
+/// `MaxLineLengthExceeded`, a line that isn't UTF-8 is an `InvalidData` I/O
+/// error), made byte-exact in two ways: a line ending in `\r\n` is an error
+/// (LinesCodec would silently strip the `\r`), and a final line cut off by
+/// EOF (no `\n`) is an error instead of being returned as a complete line,
+/// so a malformed or half-written reply can never be taken for an `ok`.
+#[derive(Debug, Clone)]
+pub struct StrictLines(LinesCodec);
+
+impl StrictLines {
+    pub fn new(max_length: usize) -> Self {
+        StrictLines(LinesCodec::new_with_max_length(max_length))
     }
-    if buf.last() != Some(&b'\n') {
-        if buf.len() > max {
-            bail!("line longer than {max} bytes");
-        }
-        bail!("connection closed mid-line");
-    }
-    buf.pop();
-    if buf.len() > max {
-        bail!("line longer than {max} bytes");
-    }
-    String::from_utf8(buf)
-        .map(Some)
-        .context("line is not UTF-8")
 }
+
+impl Decoder for StrictLines {
+    type Item = String;
+    type Error = LinesCodecError;
+
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<String>, LinesCodecError> {
+        if let Some(i) = buf.iter().position(|b| *b == b'\n') {
+            if i > 0 && buf[i - 1] == b'\r' {
+                // The caller drops the connection on any framing error.
+                return Err(LinesCodecError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "line ends in \\r\\n",
+                )));
+            }
+        }
+        self.0.decode(buf)
+    }
+
+    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<String>, LinesCodecError> {
+        match self.decode(buf)? {
+            Some(line) => Ok(Some(line)),
+            None if buf.is_empty() => Ok(None),
+            None => {
+                buf.clear();
+                Err(LinesCodecError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed mid-line",
+                )))
+            }
+        }
+    }
+}
+
+impl<T: AsRef<str>> Encoder<T> for StrictLines {
+    type Error = LinesCodecError;
+
+    fn encode(&mut self, line: T, buf: &mut BytesMut) -> Result<(), LinesCodecError> {
+        self.0.encode(line, buf)
+    }
+}
+
+/// A line-framed controller connection.
+pub type LineStream<S> = Framed<S, StrictLines>;
 
 /// Real controller client: keeps one connection open and reconnects lazily.
 pub struct UnixController {
     path: PathBuf,
     io_timeout: Duration,
-    conn: Option<BufReader<UnixStream>>,
+    conn: Option<LineStream<UnixStream>>,
     reconnected: bool,
 }
 
@@ -108,29 +140,25 @@ impl UnixController {
                 .await
                 .map_err(|_| (false, anyhow!("connect {} timed out", self.path.display())))?
                 .map_err(|e| (false, anyhow!("connect {}: {e}", self.path.display())))?;
-            self.conn = Some(BufReader::new(stream));
+            self.conn = Some(Framed::new(stream, StrictLines::new(MAX_LINE)));
             self.reconnected = true;
         }
         let conn = self.conn.as_mut().expect("connection just ensured");
         let fut = async {
-            let mut line = Vec::with_capacity(request.len() + 1);
-            line.extend_from_slice(request.as_bytes());
-            line.push(b'\n');
-            if let Err(e) = conn.get_mut().write_all(&line).await {
+            if let Err(e) = conn.send(request).await {
                 return Err((true, anyhow!("write: {e}")));
             }
             let mut out = Vec::new();
             loop {
-                let l = match read_line_bounded(conn, MAX_LINE).await {
-                    Ok(Some(l)) => l,
-                    Ok(None) => {
+                let l = match conn.next().await {
+                    Some(Ok(l)) => l,
+                    None => {
                         return Err((out.is_empty(), anyhow!("controller closed the connection")))
                     }
-                    Err(e) => {
-                        let reset = e
-                            .downcast_ref::<std::io::Error>()
-                            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionReset);
-                        return Err((out.is_empty() && reset, e));
+                    Some(Err(e)) => {
+                        let reset = matches!(&e, LinesCodecError::Io(io)
+                            if io.kind() == std::io::ErrorKind::ConnectionReset);
+                        return Err((out.is_empty() && reset, anyhow!("read reply: {e}")));
                     }
                 };
                 let done = match kind {
@@ -155,7 +183,7 @@ impl UnixController {
         let out = timeout(self.io_timeout, fut)
             .await
             .map_err(|_| (false, anyhow!("controller reply timed out")))??;
-        if !conn.buffer().is_empty() {
+        if !conn.read_buffer().is_empty() {
             // More bytes than one reply: the stream is out of step. Drop it so
             // a leftover line is never read as the reply to the next request.
             log::warn!("controller sent unexpected extra data; reconnecting");
@@ -200,30 +228,55 @@ impl Controller for UnixController {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn bounded_reader() {
-        let data: &[u8] = b"ok open 3\nsecond\n";
-        let mut r = BufReader::new(data);
+    fn decode_all(input: &[u8], max: usize) -> Vec<Result<String, String>> {
+        let mut c = StrictLines::new(max);
+        let mut buf = BytesMut::from(input);
+        let mut out = Vec::new();
+        loop {
+            match c.decode_eof(&mut buf) {
+                Ok(Some(l)) => out.push(Ok(l)),
+                Ok(None) => return out,
+                Err(e) => {
+                    out.push(Err(e.to_string()));
+                    return out;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn strict_lines_framing() {
         assert_eq!(
-            read_line_bounded(&mut r, 16).await.unwrap().as_deref(),
-            Some("ok open 3")
+            decode_all(b"ok open 3\nsecond\n", 16),
+            vec![Ok("ok open 3".to_string()), Ok("second".to_string())]
+        );
+        assert_eq!(decode_all(b"abcd\n", 4), vec![Ok("abcd".to_string())]);
+        assert!(decode_all(b"abcdefgh\n", 4)[0].is_err(), "too long");
+        assert!(
+            decode_all(b"abcdefgh", 4)[0].is_err(),
+            "too long, no newline"
+        );
+        assert!(decode_all(b"ok\xff\n", 16)[0].is_err(), "not UTF-8");
+        assert!(
+            decode_all(b"ok open 3\r\n", 16)[0].is_err(),
+            "CR is not stripped"
         );
         assert_eq!(
-            read_line_bounded(&mut r, 16).await.unwrap().as_deref(),
-            Some("second")
+            decode_all(b"a\rb\n", 16),
+            vec![Ok("a\rb".to_string())],
+            "inner CR is kept (and fails the exact match later)"
         );
-        assert_eq!(read_line_bounded(&mut r, 16).await.unwrap(), None);
+        let cut = decode_all(b"ok open 3", 16);
+        assert_eq!(cut.len(), 1);
+        assert!(cut[0].as_ref().unwrap_err().contains("mid-line"), "{cut:?}");
+        assert!(decode_all(b"", 16).is_empty());
+    }
 
-        let mut exact = BufReader::new(&b"abcd\n"[..]);
-        assert_eq!(
-            read_line_bounded(&mut exact, 4).await.unwrap().as_deref(),
-            Some("abcd")
-        );
-
-        let mut long = BufReader::new(&b"abcdefgh\n"[..]);
-        assert!(read_line_bounded(&mut long, 4).await.is_err());
-
-        let mut cut = BufReader::new(&b"abc"[..]);
-        assert!(read_line_bounded(&mut cut, 16).await.is_err());
+    #[test]
+    fn strict_lines_encodes_one_line() {
+        let mut c = StrictLines::new(16);
+        let mut buf = BytesMut::new();
+        c.encode("open 3", &mut buf).unwrap();
+        assert_eq!(&buf[..], b"open 3\n");
     }
 }

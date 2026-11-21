@@ -2,7 +2,6 @@
 //! rack_controller's local Unix socket and publishes the retained relay state.
 #![forbid(unsafe_code)]
 
-pub mod backoff;
 pub mod bridge;
 pub mod config;
 pub mod controller;

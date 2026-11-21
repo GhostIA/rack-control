@@ -4,6 +4,11 @@
 # Dependencies come from target/vendor (made by the e2e runner), so the
 # compile step runs with no network at all.
 FROM rust:1.85-slim-bookworm AS build
+# paho-mqtt (bundled + vendored-ssl) compiles the Paho C library with cmake and
+# OpenSSL with perl/make. Toolchain packages only; the cargo build below
+# still runs with no network.
+RUN apt-get update
+RUN apt-get install -y --no-install-recommends cmake make perl
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src

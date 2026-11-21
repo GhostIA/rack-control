@@ -41,6 +41,9 @@ pub enum Outcome {
 pub struct Bridge<C, M> {
     ctl: C,
     mqtt: M,
+    /// The subscription (and the `online` announcement) still has to be
+    /// (re)done on the current broker connection.
+    need_announce: bool,
     need_sync: bool,
     /// Last state this process published per relay (None = unknown).
     published: [Option<RelayState>; RELAY_CHANNELS as usize],
@@ -51,14 +54,16 @@ impl<C: Controller, M: Mqtt> Bridge<C, M> {
         Bridge {
             ctl,
             mqtt,
+            need_announce: false,
             need_sync: true,
             published: [None; RELAY_CHANNELS as usize],
         }
     }
 
-    /// True while the 8 retained states still have to be (re)published.
+    /// True while the subscription/`online` or the 8 retained states still
+    /// have to be (re)done; the worker then calls `retry` with backoff.
     pub fn needs_sync(&self) -> bool {
-        self.need_sync
+        self.need_sync || self.need_announce
     }
 
     #[cfg(test)]
@@ -70,19 +75,41 @@ impl<C: Controller, M: Mqtt> Bridge<C, M> {
     /// must be renewed each time; status is published retained (LWT is the
     /// retained `offline`). Then try to publish all relay states.
     pub async fn on_connected(&mut self) {
+        self.need_announce = true;
+        self.published = [None; RELAY_CHANNELS as usize];
+        self.need_sync = true;
+        self.announce_and_sync().await;
+    }
+
+    /// Retry whatever is still pending: the subscription/`online` first, then
+    /// the state sync. Returns true when nothing is pending any more.
+    pub async fn retry(&mut self) -> bool {
+        if self.need_announce {
+            self.announce_and_sync().await
+        } else {
+            self.sync().await
+        }
+    }
+
+    /// Subscribe (waiting for the SUBACK), then announce `online`, then sync.
+    /// `online` is only published once commands can actually arrive; if the
+    /// subscribe or the announcement fails, `needs_sync` stays true and the
+    /// worker retries with backoff (until the next reconnect at the latest).
+    async fn announce_and_sync(&mut self) -> bool {
         if let Err(e) = self.mqtt.subscribe(SET_FILTER).await {
-            log::error!("subscribe {SET_FILTER}: {e:#}");
+            log::error!("subscribe {SET_FILTER}: {e:#}; will retry");
+            return false;
         }
         if let Err(e) = self
             .mqtt
             .publish_retained(STATUS_TOPIC, STATUS_ONLINE)
             .await
         {
-            log::error!("publish {STATUS_TOPIC}: {e:#}");
+            log::error!("publish {STATUS_TOPIC}: {e:#}; will retry");
+            return false;
         }
-        self.published = [None; RELAY_CHANNELS as usize];
-        self.need_sync = true;
-        self.sync().await;
+        self.need_announce = false;
+        self.sync().await
     }
 
     /// Query the controller's `state` and publish all 8 retained relay
@@ -98,8 +125,8 @@ impl<C: Controller, M: Mqtt> Bridge<C, M> {
     /// differs from what was last published. Catches a controller restart
     /// (which resets every relay) even when no commands arrive.
     pub async fn audit(&mut self) -> bool {
-        if self.need_sync {
-            return self.sync().await;
+        if self.needs_sync() {
+            return self.retry().await;
         }
         self.refresh().await
     }
@@ -285,6 +312,7 @@ mod tests {
         published: Vec<(String, String)>,
         subscribed: Vec<String>,
         fail_publish: bool,
+        fail_subscribe: usize,
     }
 
     impl Mqtt for FakeMqtt {
@@ -297,6 +325,10 @@ mod tests {
             Ok(())
         }
         async fn subscribe(&mut self, filter: &str) -> Result<()> {
+            if self.fail_subscribe > 0 {
+                self.fail_subscribe -= 1;
+                anyhow::bail!("no SUBACK");
+            }
             self.subscribed.push(filter.to_string());
             Ok(())
         }
@@ -516,5 +548,42 @@ mod tests {
         b.need_sync = false;
         b.on_message("rack/relay/1/set", b"open", false).await;
         assert!(b.needs_sync());
+    }
+
+    #[tokio::test]
+    async fn failed_subscribe_is_retried_before_online() {
+        let mqtt = FakeMqtt {
+            fail_subscribe: 1,
+            ..Default::default()
+        };
+        let mut b = Bridge::new(FakeCtl::default().reply(&state_lines()), mqtt);
+        b.on_connected().await;
+        assert!(b.needs_sync(), "a failed subscribe must be retried");
+        let (ctl, m) = b.parts();
+        assert!(m.published.is_empty(), "no `online` without a subscription");
+        assert!(ctl.requests.is_empty());
+
+        assert!(b.retry().await);
+        assert!(!b.needs_sync());
+        let (ctl, m) = b.parts();
+        assert_eq!(m.subscribed, vec!["rack/relay/+/set"]);
+        assert_eq!(pubs(m)[0], ("rack/sbc4/status", "online"));
+        assert_eq!(m.published.len(), 9);
+        assert_eq!(ctl.requests, vec!["state"]);
+    }
+
+    #[tokio::test]
+    async fn failed_online_is_retried() {
+        let mqtt = FakeMqtt {
+            fail_publish: true,
+            ..Default::default()
+        };
+        let mut b = Bridge::new(FakeCtl::default().reply(&state_lines()), mqtt);
+        b.on_connected().await;
+        assert!(b.needs_sync());
+        b.mqtt.fail_publish = false;
+        assert!(b.retry().await);
+        assert_eq!(pubs(b.parts().1)[0], ("rack/sbc4/status", "online"));
+        assert_eq!(b.parts().1.published.len(), 9);
     }
 }

@@ -52,7 +52,7 @@ services:
     <<: *image
     command: ["relay-mqtt", "--config", "/e2e/relay-mqtt.toml"]
     environment:
-      RUST_LOG: debug,rumqttc=info,rustls=info
+      RUST_LOG: debug,paho_mqtt=info
     volumes:
       - ./relay-mqtt.e2e.toml:/e2e/relay-mqtt.toml:ro
       - ./work/sbc4:/e2e/sbc4:ro

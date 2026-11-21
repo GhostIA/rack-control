@@ -7,7 +7,8 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{sleep_until, Instant};
 
-use crate::backoff::Backoff;
+use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
+
 use crate::bridge::{Bridge, Mqtt};
 use crate::controller::Controller;
 use crate::mqtt::BrokerEvent;
@@ -35,13 +36,23 @@ impl Default for Timing {
     }
 }
 
+/// Exponential backoff (x2 per attempt, capped, never gives up) from `backon`.
+pub fn backoff(min: Duration, max: Duration) -> ExponentialBackoff {
+    ExponentialBuilder::new()
+        .with_min_delay(min)
+        .with_max_delay(max)
+        .without_max_times()
+        .build()
+}
+
 /// Run until the event channel closes (it never does in production).
 pub async fn run<C: Controller, M: Mqtt>(
     mut bridge: Bridge<C, M>,
     mut rx: UnboundedReceiver<BrokerEvent>,
     t: Timing,
 ) {
-    let mut backoff = Backoff::new(t.min_retry, t.max_retry);
+    let new_backoff = || backoff(t.min_retry, t.max_retry);
+    let mut retry_delays = new_backoff();
     let mut next_sync: Option<Instant> = None;
     let mut next_audit = Instant::now() + t.audit_every;
     loop {
@@ -55,7 +66,7 @@ pub async fn run<C: Controller, M: Mqtt>(
             ev = rx.recv() => match ev {
                 None => return,
                 Some(BrokerEvent::Connected) => {
-                    backoff.reset();
+                    retry_delays = new_backoff();
                     next_sync = None;
                     bridge.on_connected().await;
                     next_audit = Instant::now() + t.audit_every;
@@ -76,8 +87,8 @@ pub async fn run<C: Controller, M: Mqtt>(
             },
             () = retry => {
                 next_sync = None;
-                if bridge.sync().await {
-                    backoff.reset();
+                if bridge.retry().await {
+                    retry_delays = new_backoff();
                 }
             }
             () = sleep_until(next_audit) => {
@@ -90,7 +101,20 @@ pub async fn run<C: Controller, M: Mqtt>(
         } else if next_sync.is_none() {
             // Don't push an already-armed timer back, or a steady stream of
             // messages could starve the resync.
-            next_sync = Some(Instant::now() + backoff.next_delay());
+            let delay = retry_delays.next().unwrap_or(t.max_retry);
+            next_sync = Some(Instant::now() + delay);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_and_caps() {
+        let s = Duration::from_secs;
+        let got: Vec<_> = backoff(s(1), s(5)).take(6).collect();
+        assert_eq!(got, vec![s(1), s(2), s(4), s(5), s(5), s(5)]);
     }
 }

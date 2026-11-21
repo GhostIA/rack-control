@@ -22,13 +22,25 @@ name = "e2e-check"
 path = "src/bin/e2e-check.rs"
 
 [dependencies]
-rumqttc = { version = "0.24.0", features = ["use-rustls"] }
+# Eclipse Paho MQTT (Rust wrapper over the Paho C client). `bundled` builds the
+# Paho C library from source and `vendored-ssl` builds OpenSSL from source, both
+# linked statically (needs cmake, a C compiler and perl at build time).
+paho-mqtt = { version = "=0.14.0", default-features = false, features = ["bundled", "ssl", "vendored-ssl"] }
 tokio = { version = "1.40", features = ["rt", "macros", "net", "time", "signal", "io-util", "sync"] }
+tokio-util = { version = "=0.7.20", features = ["codec"] }
+futures-util = { version = "=0.3.34", default-features = false, features = ["sink"] }
+backon = { version = "=1.6.0", default-features = false, features = ["std", "tokio-sleep"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8.19"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
+
+[dev-dependencies]
+# Real parallelism for the concurrent-client race test.
+tokio = { version = "1.40", features = ["rt-multi-thread"] }
+# Embedded MQTT broker (plain TCP on 127.0.0.1) for the Paho adapter test.
+rumqttd = { version = "=0.20.0", default-features = false }
 
 [profile.release]
 lto = true

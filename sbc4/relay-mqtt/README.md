@@ -2,14 +2,21 @@
 
 Bridges the Slate broker to `rack_controller`'s local control socket:
 
-- subscribes `rack/relay/+/set` (QoS 1) as MQTT user/client id `sbc4`, mTLS + password,
-  clean session, TLS verification on;
+- uses the Eclipse Paho MQTT client (`paho-mqtt` 0.14, the Rust wrapper over Paho C)
+  and subscribes `rack/relay/+/set` (QoS 1) as MQTT 3.1.1 user/client id `sbc4`, mTLS +
+  password, clean session, TLS verification on (chain against our CA only; the broker IP
+  is checked against the cert by Paho C, which tries `X509_check_host` (CN fallback when
+  the cert has no DNS SAN) and then the IP SAN; TLS >= 1.2 via OpenSSL 3's default
+  security level, TLS 1.3 allowed). The broker cert from `rackpki` carries the IP SAN;
+  since only our CA is trusted, the CN fallback can't admit a foreign cert;
 - accepts only channels `0`..`7` (one ASCII digit) and payloads that are byte-exact
   `open` or `close`; retained messages and anything else are logged and ignored;
 - sends `open <ch>` / `close <ch>` to `/run/rack_controller/ctl.sock` and publishes the
   retained `rack/relay/<ch>/state` = `open` | `closed` **only** after the controller
   replies `ok open <ch>` / `ok close <ch>` (or a bare `ok`). On `err ...`, a timeout
-  (3 s), or a missing socket, nothing is published and the command is dropped. A request
+  (3 s), or a missing socket, nothing is published and the command is dropped. A state
+  publish counts only once its PUBACK arrives (the Paho delivery token, bounded at 5 s);
+  if it fails, every relay is re-read from the controller and republished. A request
   is re-sent once on a fresh connection only when the kept-open connection turned out
   dead before any reply (controller restarted); a timeout is never retried. Commands that
   waited more than 10 s behind a slow controller are dropped instead of applied late;
@@ -19,8 +26,18 @@ Bridges the Slate broker to `rack_controller`'s local control socket:
   (a controller restart resets every relay to closed), and audits `state` every 60 s,
   republishing any relay that differs from what it last published (this catches an idle
   controller restart);
-- reconnects forever to the broker (1 s to 30 s backoff) and to the socket (lazily per
-  request, with 1 s to 30 s state-sync retries). It never exits because either is missing.
+- reconnects forever to the broker (Paho's built-in automatic reconnect, 1 s to 30 s, also
+  after a failed first connect; a warning is logged every 60 s while it is down) and to the
+  socket (lazily per request, with 1 s to 30 s
+  state-sync retries using `backon`). It never exits because either is missing. On SIGTERM
+  it exits without an MQTT DISCONNECT, so the broker publishes the `offline` LWT.
+
+Socket framing uses `tokio_util::codec::LinesCodec` (512-byte reply lines, 128-byte
+requests in the fake) with two stricter rules, to stay byte-exact: a line ending in `\r\n`
+is an error (LinesCodec would strip the `\r`), and a last line cut off by EOF is an
+error, never a reply. Extra or out-of-step reply lines drop the connection. If the
+SUBACK for `rack/relay/+/set` does not arrive (5 s), `online` is not published and the
+subscribe is retried with backoff.
 
 It does nothing to hardware itself. **It needs the merged `rack_controller` (pending,
 `sbc4/rack_controller/`), which serves the socket.** Today's `relay_controller` has no
@@ -36,8 +53,20 @@ make docker   # same build in ghcr.io/rust-cross/rust-musl-cross:armv7-musleabih
               # with deps vendored first so the container runs with --network none
 ```
 
-`make` needs `zig`, `cargo-zigbuild` and `rustup target add armv7-unknown-linux-musleabihf`.
-The result is one static binary with no runtime libraries.
+`make` needs `zig`, `cargo-zigbuild`, `cmake` and `rustup target add
+armv7-unknown-linux-musleabihf` (plus `perl` and `make`, present on macOS). `paho-mqtt` is
+built with `features = ["bundled", "ssl", "vendored-ssl"]`: its build script compiles the
+Paho C library (`paho.mqtt.c`, via cmake) and OpenSSL 3 (`openssl-src`) from source with
+zig's musl C toolchain and links both statically. The first build takes a few minutes. The
+result is one static ARM EABI5 binary with no runtime libraries (no system OpenSSL needed
+on the SBC4). For the docker build, the cross image must provide cmake.
+
+### Licences
+
+`paho-mqtt` and the bundled Paho C library are dual-licensed **EPL-2.0 / EDL-1.0**
+(Eclipse Distribution License, BSD-style), at the recipient's choice.
+The statically linked OpenSSL 3 is Apache-2.0. Everything else is MIT/Apache-2.0. Keep
+these notices with any copy of the binary you hand out.
 
 ## Deploy on the SBC4 (manual)
 
@@ -89,11 +118,21 @@ defaults are the production values): `host`, `port`, `ca_file`, `cert_file`, `ke
 
 ## Tests
 
-- `make check` runs the unit tests (topic/payload/state parsing, the bridge logic with fake
-  MQTT and controller traits) and `tests/socket.rs` (the real `UnixController` against
-  the in-memory fake controller on a Unix socket in a temp dir: round trip, `err`,
-  missing socket, controller restart (with and without traffic), oversized and out-of-step
-  replies, no retry on timeout, stale-command drop, and the worker retry loop).
+- `make check` runs the unit tests (topic/payload/state parsing, line framing, Paho option
+  building, the bridge logic with fake MQTT and controller traits), `tests/socket.rs` (the
+  real `UnixController` against the in-memory fake controller on a Unix socket in a temp
+  dir: round trip, `err`, missing socket, controller restart (with and without traffic),
+  oversized and out-of-step replies, no retry on timeout, stale-command drop, and the
+  worker retry loop) and `tests/race.rs` (8 concurrent controller clients with no
+  cross-talk; a burst of commands during a `state` sync; the controller dying
+  mid-command; a broker reconnect while a state publish is in flight). The race tests use
+  a fake broker that checks, at the moment of every state publish, that the controller
+  really holds that state. `tests/paho_broker.rs` runs the real Paho adapter (callbacks,
+  `ClientMqtt`, all connect options except TLS) against an embedded `rumqttd` broker on
+  127.0.0.1: online + 8 states, retained and invalid commands ignored, a command applied;
+  and, through a loopback proxy that cuts the connection, the LWT `offline`, Paho's
+  automatic reconnect, re-subscribe, `online` and a full re-sync. TLS itself is only
+  exercised by the docker e2e.
 - `make e2e` (needs Docker) runs `e2e/`. A Rust runner generates throwaway test PKI and
   a mosquitto `passwd` into `e2e/work/` (gitignored, deleted afterwards) and vendors the
   crate dependencies. It then drives `docker compose` with an `eclipse-mosquitto:2.0.20`
