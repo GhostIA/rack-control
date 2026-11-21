@@ -1,0 +1,62 @@
+# rackctl configuration. Install as /etc/rack/rack.toml (root:root 0600).
+#
+# ##########################################################################
+# ##  WARNING: THE RELAY MAPPING BELOW IS UNVERIFIED.                      ##
+# ##  The `relay` numbers come from notes, not from a test. Until you run  ##
+# ##  `rackctl map-verify` (whole rack off, all relays open) and paste its ##
+# ##  [[pc]] snippet here, a relay cut may power off the WRONG machine.    ##
+# ##  For the first live tests use `rackctl shutdown --no-relay ...`.      ##
+# ##  Before map-verify: `rackctl relay open 3` (and 5, 7) since unmapped  ##
+# ##  channels are closed after an SBC4 boot.                              ##
+# ##########################################################################
+
+[broker]
+host = "192.168.8.1"          # also the TLS ServerName (broker cert has an IP SAN)
+port = 8883
+ca = "/etc/rack/tls/ca.crt"
+cert = "/etc/rack/tls/orchestrator.crt"
+key = "/etc/rack/tls/orchestrator.key"
+username = "orchestrator"     # also the MQTT client ID; must match the cert CN
+password_file = "/etc/rack/orchestrator.password"
+
+[shutdown]
+timeout = "120s"              # per host: shutdown cmd -> sustained ping loss (override per [[pc]])
+cut_delay = "30s"             # after ping loss, before the relay opens (disks finish syncing)
+pve_quorum = 3                # partial shutdowns must leave at least this many PVE nodes up
+# Shutdown order (rack-up uses the reverse). Must list every [[pc]] exactly once.
+# intel-1ecbc8 runs the ceph maintenance agent, so it goes last.
+order = ["intel-a163f8", "intel-91c45d", "intel-d1babf", "intel-177e78", "intel-1ecbc8"]
+
+# roles: "osd" (Ceph OSD host), "mon" (Ceph monitor), "vm" (runs guests).
+# relay: 0-3 = HUB0004 port 3 ch0-3, 4-7 = port 4 ch0-3.
+
+[[pc]]
+name = "intel-91c45d"
+ip = "192.168.8.196"
+relay = 0                     # UNVERIFIED
+roles = ["osd"]
+
+[[pc]]
+name = "intel-d1babf"
+ip = "192.168.8.194"
+relay = 1                     # UNVERIFIED
+roles = ["osd"]
+
+[[pc]]
+name = "intel-177e78"
+ip = "192.168.8.162"
+relay = 2                     # UNVERIFIED
+roles = ["osd", "mon"]
+
+[[pc]]
+name = "intel-a163f8"
+ip = "192.168.8.123"
+relay = 4                     # UNVERIFIED
+roles = ["mon", "vm"]
+timeout = "300s"              # VM 200 (media-stack) needs time for a clean guest shutdown
+
+[[pc]]
+name = "intel-1ecbc8"
+ip = "192.168.8.234"
+relay = 6                     # UNVERIFIED
+roles = ["osd", "mon"]

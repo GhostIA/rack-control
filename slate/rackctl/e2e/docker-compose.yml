@@ -1,0 +1,69 @@
+# e2e rig for rackctl. Driven by e2e_test.go (go test -tags e2e ./e2e/),
+# which generates ./work (certs, passwd, acl, binaries, rack.toml) first.
+#
+# The network is `internal: true` on 172.30.0.0/24: no route out of the
+# Docker host, so nothing here can reach the real rack on 192.168.8.0/24.
+name: rackctl-e2e
+
+x-node: &node
+  build: .
+  image: rackctl-e2e-node:local
+  restart: "no"
+  cap_add: [NET_RAW]
+  depends_on: [broker]
+
+networks:
+  rack:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          ip_range: 172.30.0.128/25
+
+services:
+  broker:
+    image: eclipse-mosquitto:2.0.20
+    command: ["mosquitto", "-c", "/work/mosquitto/mosquitto.conf"]
+    volumes: ["./work:/work:ro"]
+    networks: { rack: { ipv4_address: 172.30.0.2 } }
+
+  sbc4:
+    <<: *node
+    entrypoint: ["/bin/fakenode", "-mode", "sbc4", "-user", "sbc4", "-password-file", "/work/pw/sbc4",
+                 "-map", "0=172.30.0.11,1=172.30.0.12,2=172.30.0.13,4=172.30.0.14,6=172.30.0.15"]
+    volumes: ["./work:/work:ro"]
+    networks: { rack: { ipv4_address: 172.30.0.3 } }
+
+  pc-a:
+    <<: *node
+    entrypoint: ["/bin/fakenode", "-mode", "pc", "-user", "e2e-a", "-name", "e2e-a", "-password-file", "/work/pw/e2e-a", "-ignore=${IGNORE_A:-false}"]
+    volumes: ["./work:/work:ro"]
+    networks: { rack: { ipv4_address: 172.30.0.11 } }
+  pc-b:
+    <<: *node
+    entrypoint: ["/bin/fakenode", "-mode", "pc", "-user", "e2e-b", "-name", "e2e-b", "-password-file", "/work/pw/e2e-b", "-ignore=${IGNORE_B:-false}"]
+    volumes: ["./work:/work:ro"]
+    networks: { rack: { ipv4_address: 172.30.0.12 } }
+  pc-c:
+    <<: *node
+    entrypoint: ["/bin/fakenode", "-mode", "pc", "-user", "e2e-c", "-name", "e2e-c", "-password-file", "/work/pw/e2e-c", "-ignore=${IGNORE_C:-false}"]
+    volumes: ["./work:/work:ro"]
+    networks: { rack: { ipv4_address: 172.30.0.13 } }
+  pc-d:
+    <<: *node
+    entrypoint: ["/bin/fakenode", "-mode", "pc", "-user", "e2e-d", "-name", "e2e-d", "-password-file", "/work/pw/e2e-d", "-ignore=${IGNORE_D:-false}"]
+    volumes: ["./work:/work:ro"]
+    networks: { rack: { ipv4_address: 172.30.0.14 } }
+  pc-e:
+    <<: *node
+    entrypoint: ["/bin/fakenode", "-mode", "pc", "-user", "e2e-e", "-name", "e2e-e", "-password-file", "/work/pw/e2e-e", "-ceph", "-ignore=${IGNORE_E:-false}"]
+    volumes: ["./work:/work:ro"]
+    networks: { rack: { ipv4_address: 172.30.0.15 } }
+
+  # Run on demand: docker compose run --rm rackctl <args>
+  rackctl:
+    <<: *node
+    profiles: ["tools"]
+    entrypoint: ["/bin/rackctl", "--config", "/work/rack.toml"]
+    volumes: ["./work:/work:ro"]
+    networks: [rack]
