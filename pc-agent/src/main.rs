@@ -6,11 +6,13 @@
 mod agent;
 mod config;
 mod install;
+mod logging;
 mod mqtt;
 #[cfg(test)]
 mod stub_broker;
 mod system;
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -92,9 +94,64 @@ fn parse_args(args: &[String]) -> Result<Cli> {
 }
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    install_panic_hook();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let result = parse_args(&args).and_then(|cli| match cli {
+    #[cfg(debug_assertions)]
+    if args.first().map(String::as_str) == Some("--panic-test") {
+        panic_test();
+    }
+    let code = match real_main(&args) {
+        Ok(()) => 0,
+        Err(e) => {
+            if !logging::installed() {
+                let _ = logging::init(&logging::directives(None));
+            }
+            if logging::installed() {
+                error!("{e:#}");
+            } else {
+                let _ = writeln!(std::io::stderr(), "error: {e:#}");
+            }
+            1
+        }
+    };
+    // fast_log writes on its own thread: flush so the last lines (e.g.
+    // "dry_run: would power off") are never lost.
+    logging::flush();
+    std::process::exit(code);
+}
+
+/// human-panic, plus two things it does not do for a daemon: flush the log
+/// first, and put the panic message itself on stderr (journald). In release
+/// builds human-panic writes the message only to its report file, which is
+/// in the unit's PrivateTmp and gone once systemd restarts the agent.
+fn install_panic_hook() {
+    human_panic::setup_panic!(human_panic::metadata!()
+        .support("- The panic message is also in the journal: journalctl -u rack-agent"));
+    let human = human_panic::PanicStyle::default() == human_panic::PanicStyle::Human;
+    let next = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        logging::flush();
+        if human {
+            let _ = writeln!(
+                std::io::stderr(),
+                "rack-agent {}: {info}",
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+        next(info);
+    }));
+}
+
+/// Debug builds only (tests/panic_hook.rs): log a line, then panic.
+#[cfg(debug_assertions)]
+fn panic_test() -> ! {
+    let _ = logging::init(&logging::directives(None));
+    info!("panic-test: logged just before the panic");
+    panic!("--panic-test (debug builds only)");
+}
+
+fn real_main(args: &[String]) -> Result<()> {
+    match parse_args(args)? {
         Cli::Help => {
             println!("{USAGE}");
             Ok(())
@@ -114,19 +171,14 @@ fn main() {
             bundle,
         } => install::install(dry_run, config.as_deref(), bundle.as_deref()),
         Cli::Run { config } => {
-            let cfg = Config::load(&config);
-            cfg.and_then(|cfg| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("building tokio runtime")?
-                    .block_on(run(cfg))
-            })
+            let cfg = Config::load(&config)?;
+            logging::init(&logging::directives(cfg.log_level.as_deref()))?;
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("building tokio runtime")?
+                .block_on(run(cfg))
         }
-    });
-    if let Err(e) = result {
-        error!("{e:#}");
-        std::process::exit(1);
     }
 }
 

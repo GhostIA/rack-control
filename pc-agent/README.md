@@ -90,6 +90,46 @@ into the binary, so keep their notices with any redistribution.
 `config.example.toml` documents every key. Unknown keys are rejected. `name` and
 `ceph_id` must match `[a-z0-9-]+` and must not start with `-`.
 
+## Configuration, logging and crashes
+
+The config is loaded with [figment](https://docs.rs/figment/0.10): built-in
+defaults, then the TOML file, then environment overrides. A missing or
+unreadable config file is an error. Errors print the whole context chain and
+name the file and the bad key, for example:
+
+```
+in config /etc/rack-agent/config.toml: parsing config: unknown field: found `dryrun`, expected ... for key "default.dryrun" in TOML source string
+```
+
+Every key can be overridden by `RACK_AGENT_<KEY>` (key upper-cased), for
+example `RACK_AGENT_DRY_RUN=true`, `RACK_AGENT_BROKER_PORT=18883` or
+`RACK_AGENT_LOG_LEVEL=debug`. Only the keys in `config.example.toml` are read
+this way, so other `RACK_AGENT_*` variables are ignored. Overrides are
+validated like the file. `rack-agent check` applies them too.
+
+Logs go through [fast_log](https://docs.rs/fast_log/1.7) (a writer thread) to
+stderr, which journald collects, as
+`[2026-11-21T12:00:00Z INFO  rack_agent::mqtt] ...`. The filter uses `RUST_LOG`
+syntax (`info`, `debug`, `info,rack_agent::mqtt=debug`). It comes from the
+`log_level` key (or `RACK_AGENT_LOG_LEVEL`) if set, otherwise from `RUST_LOG`
+(the unit sets `info`), otherwise `info`. The log is flushed before every exit
+(normal, error, SIGTERM, `dry_run`), before and after the logind PowerOff call,
+and in the panic hook. Each flush waits at most 2 s.
+
+Panics use [human-panic](https://docs.rs/human-panic/2.0). The release build
+has `panic = "abort"`. The hook runs before the abort and does three things:
+it flushes the log, prints `rack-agent <version>: panicked at <file:line>:
+<message>` to stderr (so it is in `journalctl -u rack-agent`), and then
+human-panic prints its notice with the path of a TOML crash report
+(`report-<uuid>.toml`, with the message, location, OS and backtrace) in the
+temp dir. Under the unit's `PrivateTmp=yes`, that is the service's private
+`/tmp`, which is on the host under
+`/tmp/systemd-private-*-rack-agent.service-*/tmp/`. systemd removes that
+directory when the unit stops, so expect it to be gone after the automatic
+restart (`Restart=always`, 5 s later). **The journal is the place to look**,
+and the report is a bonus if you catch it. Setting `RUST_BACKTRACE=1` switches back to Rust's
+default panic output (message plus backtrace on stderr, no report).
+
 ## polkit vs root
 
 The agent runs as the unprivileged `rack-agent` user under a hardened unit
@@ -168,6 +208,15 @@ logs the commands.
   - **race (c)**: a reconnect replays a retained `shutdown`, which is ignored.
 
   TLS itself is not unit-tested; the e2e run and the live broker cover it.
+- **Config, logging and panic tests**: unknown keys (in a file too), a missing
+  file, defaults, the example config, `RACK_AGENT_*` overrides (unrelated ones
+  ignored), the `{:#}` context chain, and a deliberately slow log sink that
+  must hold the last line once `flush` returns. `tests/panic_hook.rs` runs the
+  debug binary. With `--panic-test` (a debug-build-only switch, absent from
+  release), it checks that the line logged just before the panic is flushed,
+  that the panic message reaches stderr, and that human-panic writes its
+  report. It also checks that a broken config and a missing config exit 1
+  with the chained error on stderr.
 - **E2E** (`make e2e`, needs Docker): `e2e/` is a Rust driver that generates a
   throwaway CA, certs, a passwd and an ACL into the gitignored `e2e/work/`. It
   starts `eclipse-mosquitto:2.0.20` (mTLS + password + ACL) and the agent in

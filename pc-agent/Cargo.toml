@@ -18,16 +18,30 @@ path = "src/main.rs"
 paho-mqtt = { version = "=0.14.0", default-features = false, features = ["bundled", "ssl", "vendored-ssl"] }
 tokio = { version = "1.40", features = ["rt", "macros", "time", "signal", "sync", "process"] }
 serde = { version = "1", features = ["derive"] }
-toml = "0.8.19"
-anyhow = "1"
+anyhow = "=1.0.104"
+# Config loading: the TOML file, then RACK_AGENT_* env overrides.
+figment = { version = "=0.10.19", features = ["toml", "env"] }
+# Panic hook: writes a crash report to the temp dir (we also log the message).
+human-panic = { version = "=2.0.2", default-features = false }
 log = "0.4"
-env_logger = "0.11"
+# Asynchronous logger behind the `log` facade (writer thread -> stderr).
+fast_log = { version = "=1.7.10", default-features = false, features = ["runtime_thread"] }
+# RUST_LOG-style directive parsing (the parser env_logger uses).
+env_filter = { version = "=2.0.0", default-features = false, features = ["std"] }
+# Timestamps for the log lines (fast_log's own date crate).
+fastdate = "=0.3.36"
 zbus = { version = "4.4.0", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 # Embedded MQTT broker for the adapter tests (real Paho client on 127.0.0.1).
 rumqttd = { version = "=0.20.0", default-features = false }
+toml = "0.8.19"
 tokio = { version = "1.40", features = ["rt", "macros", "time", "test-util", "rt-multi-thread", "net", "io-util"] }
+
+# human-panic picks its style from its own debug_assertions. Build it like
+# release in dev/test too, so tests/panic_hook.rs exercises the release hook.
+[profile.dev.package.human-panic]
+debug-assertions = false
 
 [profile.release]
 lto = true

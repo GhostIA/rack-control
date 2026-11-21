@@ -163,7 +163,7 @@ pub fn spawn_watchdog(cli: paho::AsyncClient, every: Duration) {
             let since = *down_since.get_or_insert_with(Instant::now);
             log::warn!(
                 "broker {} not connected (checked for {}s); Paho keeps reconnecting. \
-                 RUST_LOG=info,paho_mqtt::c_trace=debug shows each attempt's error",
+                 log_level (or RUST_LOG) \"info,paho_mqtt::c_trace=debug\" shows each attempt's error",
                 cli.server_uri(),
                 since.elapsed().as_secs()
             );
