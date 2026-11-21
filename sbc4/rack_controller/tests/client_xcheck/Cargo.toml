@@ -1,0 +1,17 @@
+[package]
+name = "rack-controller-xcheck"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Test-only: relay-mqtt's real socket client and parser against rack_controller's socket server (fake HAL)"
+
+# Not part of any workspace.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+relay-mqtt = { path = "../../../relay-mqtt" }
+tokio = { version = "1.40", features = ["rt", "macros", "net", "time", "io-util"] }
+anyhow = "1"
