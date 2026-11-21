@@ -14,11 +14,21 @@ because a stale retained `shutdown` would otherwise power the host off at every
 boot. A duplicate `shutdown` is ignored once a power-off has been requested.
 Message content is never executed or used as an argument.
 
-MQTT: TLS 1.2+ to `broker_host:broker_port` with server verification always on,
-a client certificate plus a password, username and client id = `name`, a clean
-session, LWT retained `offline`, and retained `online` published on every
-connect. On `systemctl stop` the agent publishes `offline`. During a shutdown it
-disconnects cleanly, so the retained `down` stays in place.
+MQTT uses the Eclipse Paho client (`paho-mqtt` 0.14.0, which wraps the Paho
+C library 1.3.16). It connects with TLS 1.2 to `ssl://broker_host:broker_port`.
+Only the configured CA is trusted, the server certificate is always verified,
+and the host is checked too: an IP `broker_host` must match an IP SAN. It
+authenticates with a client certificate plus a password. Username and client id
+are both `name`. The session is clean, the LWT is retained `offline` (QoS 1),
+and keepalive is 30 s. Paho handles reconnects itself, starting at 1 s and
+doubling up to 30 s, and it also retries when the very first connect fails.
+After every (re)connect the agent subscribes again and publishes retained
+`online`, or `down` if a power-off is already under way. A status publish is
+QoS 1, and the agent waits up to 5 s on Paho's delivery token, which completes
+on PUBACK. Publishes made while disconnected are buffered in memory (max 16)
+and sent after the reconnect. There is no on-disk persistence. On `systemctl
+stop` the agent publishes `offline`. During a shutdown it disconnects cleanly,
+so the retained `down` stays in place.
 
 The guests are **not** orchestrated here. During host shutdown, Proxmox's
 `pve-guests.service` stops the VMs and CTs. The orchestrator gates the relay
@@ -31,6 +41,21 @@ make            # cargo-zigbuild if installed, else Docker (rust-musl-cross) -> 
 make test       # cargo fmt --check, clippy -D warnings, unit tests (macOS ok, no bus/broker)
 make e2e        # Docker e2e (see below)
 ```
+
+The result is one statically linked x86_64 musl ELF with no runtime `.so`
+dependencies. paho-mqtt's `bundled` feature builds the Paho C library with
+**cmake**, and `vendored-ssl` builds **OpenSSL 3** from source (via
+`openssl-src`, which needs **perl** and **make**). Both are linked in
+statically. With zig as the C cross-compiler (`cargo zigbuild`), the build host
+needs cmake, perl, make, zig and the `x86_64-unknown-linux-musl` rustup target.
+No system OpenSSL is used. A cold build takes a few minutes because OpenSSL is
+compiled. The same applies to `cargo test` on the dev host, which builds Paho C
+and OpenSSL natively.
+
+**Licences:** Paho (C library and Rust wrapper) is dual-licensed EPL-2.0 /
+EDL-1.0 (Eclipse Distribution License, a BSD-3-Clause licence). We ship it
+unmodified under EDL-1.0. OpenSSL 3 is Apache-2.0. Both are statically linked
+into the binary, so keep their notices with any redistribution.
 
 ## Deploy (per host, as root)
 
@@ -125,8 +150,24 @@ logs the commands.
   error, a duplicate `shutdown` causes one PowerOff, a failed PowerOff reverts
   to `online`, the ceph topic is ignored when disabled, the exact ceph argv,
   ceph errors publish `error`, ceph never runs in dry_run, bad `name`/`ceph_id`
-  are rejected, the `install --dry-run` plan, and the real publisher's PUBACK
-  matching and 5 s timeout (with paused tokio time).
+  are rejected, the `install --dry-run` plan, and a concurrent message storm
+  that must cause exactly one power-off.
+- **Adapter tests** run the real Paho client over loopback TCP, without TLS.
+  Most use an embedded `rumqttd` broker (a dev-dependency) and cover: password
+  auth (a wrong password never connects), subscribe and `online`, a retained
+  `shutdown` stored on the broker being ignored, Paho retrying a failed first
+  connect, and **race (a)**. In race (a), Paho's callback thread delivers a
+  300-message burst while the loop handles one message at a time. The result
+  must be exactly one `down`, acknowledged before the single PowerOff. A small
+  in-test stub (`src/stub_broker.rs`) is used only for faults a real broker
+  won't produce on cue:
+  - the raw CONNECT fields (will, clean session, credentials)
+  - PUBACKs that never arrive (timeout), and an ACL-rejected SUBACK (0x80), which is logged and not fatal
+  - **race (b)**: the link drops while `down` is unacknowledged. PowerOff must
+    happen exactly once within 5 s, and `down` is republished after the reconnect.
+  - **race (c)**: a reconnect replays a retained `shutdown`, which is ignored.
+
+  TLS itself is not unit-tested; the e2e run and the live broker cover it.
 - **E2E** (`make e2e`, needs Docker): `e2e/` is a Rust driver that generates a
   throwaway CA, certs, a passwd and an ACL into the gitignored `e2e/work/`. It
   starts `eclipse-mosquitto:2.0.20` (mTLS + password + ACL) and the agent in

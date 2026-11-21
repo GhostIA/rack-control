@@ -7,6 +7,8 @@ mod agent;
 mod config;
 mod install;
 mod mqtt;
+#[cfg(test)]
+mod stub_broker;
 mod system;
 
 use std::path::PathBuf;
@@ -14,12 +16,11 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use log::{error, info};
-use rumqttc::{AsyncClient, QoS};
 use tokio::signal::unix::{signal, SignalKind};
 
-use agent::{Agent, Outcome};
-use config::{Config, DEFAULT_CONFIG_PATH};
-use mqtt::{LoopEvent, MqttPublisher};
+use agent::Agent;
+use config::{read_password, Config, DEFAULT_CONFIG_PATH};
+use mqtt::{MqttPublisher, Served};
 use system::{CephCli, LogindPowerOff};
 
 const USAGE: &str = "\
@@ -129,11 +130,6 @@ fn main() {
     }
 }
 
-async fn disconnect(client: &AsyncClient, loop_task: tokio::task::JoinHandle<()>) {
-    let _ = tokio::time::timeout(Duration::from_secs(2), client.disconnect()).await;
-    let _ = tokio::time::timeout(Duration::from_secs(3), loop_task).await;
-}
-
 async fn run(cfg: Config) -> Result<()> {
     info!(
         "rack-agent {} starting as {} (broker {}:{}, ceph_maintenance={}, dry_run={})",
@@ -144,10 +140,12 @@ async fn run(cfg: Config) -> Result<()> {
         cfg.ceph_maintenance,
         cfg.dry_run
     );
-    let opts = mqtt::options(&cfg)?;
-    let (client, eventloop) = AsyncClient::new(opts, 16);
-    let (mut events, acks, loop_task) = mqtt::spawn_event_loop(eventloop);
-    let publisher = MqttPublisher::new(client.clone(), acks);
+    let ssl = mqtt::tls_options(&cfg)?;
+    let password = read_password(&cfg.password_file)?;
+    let client = mqtt::create_client(&mqtt::broker_uri(&cfg), &cfg.name)?;
+    // Callbacks must be in place before the first connect.
+    let mut events = mqtt::event_channel(&client);
+    let publisher = MqttPublisher::new(client.clone());
     // Two runs per command; keep the worst case (2 x 20 s) well under
     // systemd's 90 s stop timeout and the orchestrator's ping-down window.
     let ceph = CephCli {
@@ -157,36 +155,33 @@ async fn run(cfg: Config) -> Result<()> {
 
     let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
     let mut sigint = signal(SignalKind::interrupt()).context("installing SIGINT handler")?;
-
-    loop {
+    let stop = async {
         tokio::select! {
-            ev = events.recv() => match ev {
-                None => bail!("mqtt event loop ended unexpectedly"),
-                Some(LoopEvent::Connected) => {
-                    for t in agent.subscriptions() {
-                        info!("subscribing {t}");
-                        client.subscribe(t, QoS::AtLeastOnce).await.context("subscribe")?;
-                    }
-                    agent.on_connected().await;
-                }
-                Some(LoopEvent::Message(m)) => {
-                    if agent.handle(&m).await == Outcome::Exit {
-                        // Clean DISCONNECT: the broker keeps the retained `down`
-                        // instead of firing the `offline` will.
-                        disconnect(&client, loop_task).await;
-                        info!("exiting (dry_run)");
-                        return Ok(());
-                    }
-                }
-            },
-            _ = sigterm.recv() => break,
-            _ = sigint.recv() => break,
+            _ = sigterm.recv() => {}
+            _ = sigint.recv() => {}
         }
+    };
+
+    mqtt::start_connect(
+        &client,
+        mqtt::connect_options(&cfg.name, &password, &cfg.status_topic(), Some(ssl)),
+    );
+    match mqtt::serve(&client, &mut agent, &mut events, stop).await? {
+        Served::Exit => {
+            // Clean DISCONNECT: the broker keeps the retained `down` instead
+            // of firing the `offline` will.
+            mqtt::disconnect(&client).await;
+            info!("exiting (dry_run)");
+            Ok(())
+        }
+        Served::Stopped => {
+            info!("signal received; stopping");
+            agent.on_terminate().await;
+            mqtt::disconnect(&client).await;
+            Ok(())
+        }
+        Served::Closed => bail!("mqtt callbacks ended unexpectedly"),
     }
-    info!("signal received; stopping");
-    agent.on_terminate().await;
-    disconnect(&client, loop_task).await;
-    Ok(())
 }
 
 #[cfg(test)]
