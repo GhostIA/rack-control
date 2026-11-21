@@ -43,7 +43,7 @@ const char* KindWord(Kind k) {
 void PrintUsage(const char* argv0) {
     std::printf(
         "Usage: %s [--serial N] [--fan PORT[:CHANS]] [--ssr PORT[:CHANS]]\n"
-        "          [--duty D] [--failsafe-ms N] [--socket PATH] [--help]\n\n"
+        "          [--duty D] [--failsafe-ms N] [--socket PATH] [--start-open] [--help]\n\n"
         "Owns the SBC4's whole VINT hub: relays (REL1000 x2, hub ports 3 and 4,\n"
         "relay ch 0-7), fans (OUT1100 PWM) and SSR (REL1100), plus a local\n"
         "control socket.\n\n"
@@ -54,6 +54,8 @@ void PrintUsage(const char* argv0) {
         "  --duty D            Initial fan PWM duty 0.0-1.0 (default 0.5).\n"
         "  --failsafe-ms N     Failsafe window in ms, all channels (default %u).\n"
         "  --socket PATH       Control socket (default %s).\n"
+        "  --start-open        Start with every relay commanded open (PCs stay off;\n"
+        "                      no power-on stagger) until a `close <ch>`.\n"
         "  --help              This message.\n",
         argv0, kDefaultSerial, kDefaultFailsafeMs, kDefaultSocket);
 }
@@ -156,6 +158,8 @@ bool ParseArgs(int argc, char** argv, Config& cfg, int& exitCode) {
                 exitCode = 2; return false;
             }
             cfg.socketPath = p;
+        } else if (!std::strcmp(a, "--start-open")) {
+            cfg.startOpen = true;
         } else {
             std::fprintf(stderr, "ERROR: unknown argument '%s' (try --help)\n", a);
             exitCode = 2; return false;
@@ -277,7 +281,10 @@ Controller::Controller(Hal& hal, const Config& cfg, std::atomic<bool>& running)
         c.number = i;
         c.hubPort = kRelayPorts[i / 4];
         c.channel = i % 4;
-        c.cmdOn = true;   // all relays default closed (load on)
+        // All relays default closed (load on). --start-open commands them all
+        // open instead, so the stagger skips every relay and the PCs stay off
+        // until a `close` (used for map-verify / an ordered rack-up).
+        c.cmdOn = !cfg.startOpen;
         ch_.push_back(c);
     }
     for (int n : cfg.fan.channels) {

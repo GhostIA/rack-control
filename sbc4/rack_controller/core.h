@@ -65,6 +65,7 @@ struct Config {
     double      duty = kDefaultDuty;
     uint32_t    failsafeMs = kDefaultFailsafeMs;
     std::string socketPath = kDefaultSocket;
+    bool        startOpen = false;   // --start-open: every relay commanded open at start
 };
 
 void PrintUsage(const char* argv0);

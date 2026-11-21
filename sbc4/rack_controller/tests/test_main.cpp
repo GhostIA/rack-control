@@ -211,6 +211,40 @@ static void TestOpenDuringStaggerSkipsRelay() {
     CHECK_EQ(t.hal.Get(5).enables, 1);
 }
 
+// --start-open: no relay is switched on or armed by the stagger; state says
+// open; a later `close` arms then energizes just that relay.
+static void TestStartOpenKeepsAllRelaysOff() {
+    Config c;
+    c.startOpen = true;
+    Rig t(c);
+    t.ctl->CreateAll();
+    t.ctl->OpenRelaysBlocking();
+    t.ctl->RunStagger();
+    for (int i = 0; i < 8; ++i) {
+        CHECK(!t.hal.Get(i).state);
+        CHECK(!t.hal.Get(i).failsafe);
+        CHECK(!t.ctl->Snapshot(i).armed);
+    }
+    for (auto& call : t.hal.Calls()) CHECK(!(StartsWith(call, "setstate ") && call.back() == '1'));
+    auto st = t.ctl->Handle("state");
+    for (int i = 0; i < 8; ++i)
+        CHECK_EQ(st[i], "relay " + std::to_string(i) + " cmd=open attached=1");
+    CHECK_EQ(t.One("close 2"), std::string("ok close 2"));
+    CHECK(t.hal.Get(2).state); CHECK(t.hal.Get(2).failsafe);
+    CHECK(!t.hal.Get(3).state);
+}
+
+static void TestStartOpenFlagParses() {
+    const char* argv[] = {"rack_controller", "--start-open"};
+    Config c; int code = 0;
+    CHECK(ParseArgs(2, const_cast<char**>(argv), c, code));
+    CHECK(c.startOpen);
+    Config d;
+    const char* argv2[] = {"rack_controller"};
+    CHECK(ParseArgs(1, const_cast<char**>(argv2), d, code));
+    CHECK(!d.startOpen);
+}
+
 static void TestCloseDuringStaggerArmsEarly() {
     Rig t;
     t.ctl->CreateAll();
@@ -791,6 +825,8 @@ int main() {
     TestStartupAndStagger();
     TestStaggerStopsOnSignal();
     TestOpenDuringStaggerSkipsRelay();
+    TestStartOpenKeepsAllRelaysOff();
+    TestStartOpenFlagParses();
     TestCloseDuringStaggerArmsEarly();
     TestRelayCommands();
     TestSetStateFailureIsErrNotExit();
