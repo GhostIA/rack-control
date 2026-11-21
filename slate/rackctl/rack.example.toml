@@ -1,14 +1,8 @@
 # rackctl configuration. Install as /etc/rack/rack.toml (root:root 0600).
 #
-# ##########################################################################
-# ##  WARNING: THE RELAY MAPPING BELOW IS UNVERIFIED.                      ##
-# ##  The `relay` numbers come from notes, not from a test. Until you run  ##
-# ##  `rackctl map-verify` (whole rack off, all relays open) and paste its ##
-# ##  [[pc]] snippet here, a relay cut may power off the WRONG machine.    ##
-# ##  For the first live tests use `rackctl shutdown --no-relay ...`.      ##
-# ##  Before map-verify: `rackctl relay open 3` (and 5, 7) since unmapped  ##
-# ##  channels are closed after an SBC4 boot.                              ##
-# ##########################################################################
+# Relay mapping VERIFIED on 2026-11-21 (map-verify for 0-3, then a one-at-a-time
+# power-up confirmed 4 and 6). Relays 3, 5, 7 power nothing. If you rewire, run
+# `rackctl map-verify` again (whole rack off, all relays open) before trusting it.
 
 [broker]
 host = "192.168.8.1"          # also the TLS ServerName (broker cert has an IP SAN)
@@ -33,30 +27,30 @@ order = ["intel-a163f8", "intel-91c45d", "intel-d1babf", "intel-177e78", "intel-
 [[pc]]
 name = "intel-91c45d"
 ip = "192.168.8.196"
-relay = 0                     # UNVERIFIED
+relay = 0                     # VERIFIED 2026-11-21
 roles = ["osd"]
 
 [[pc]]
 name = "intel-d1babf"
 ip = "192.168.8.194"
-relay = 1                     # UNVERIFIED
+relay = 2                     # VERIFIED 2026-11-21
 roles = ["osd"]
 
 [[pc]]
 name = "intel-177e78"
 ip = "192.168.8.162"
-relay = 2                     # UNVERIFIED
+relay = 1                     # VERIFIED 2026-11-21
 roles = ["osd", "mon"]
 
 [[pc]]
 name = "intel-a163f8"
 ip = "192.168.8.123"
-relay = 4                     # UNVERIFIED
+relay = 4                     # VERIFIED 2026-11-21
 roles = ["mon", "vm"]
 timeout = "300s"              # VM 200 (media-stack) needs time for a clean guest shutdown
 
 [[pc]]
 name = "intel-1ecbc8"
 ip = "192.168.8.234"
-relay = 6                     # UNVERIFIED
+relay = 6                     # VERIFIED 2026-11-21
 roles = ["osd", "mon"]
