@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# Secrets — never commit. Commit only *.example / placeholder files.
+# Real values come from 1Password at deploy time; keys/certs come from slate/pki/.
+# ---------------------------------------------------------------------------
+
+# 1Password-mounted env files (named pipes) — root passwords at ./.env,
+# MQTT broker passwords at slate/.env. Ignore any .env anywhere.
+.env
+.env.*
+!.env.example
+
+# Generic credential files
+*.creds
+*.secret
+*.secrets
+
+# --- slate/ (GL.iNet Slate, Mosquitto broker + orchestrator) ---------------
+# Real Mosquitto password file (hashes generated from 1Password); keep passwd.example
+slate/mosquitto/passwd
+slate/mosquitto/passwd.*
+!slate/mosquitto/passwd.example
+# rack.conf holds the orchestrator's broker creds; keep rack.conf.example
+slate/etc/rack.conf
+!slate/etc/rack.conf.example
+
+# --- PKI: CA, broker, and per-client TLS material -------------------------
+# slate/pki/ commits ONLY the gen-*.sh scripts and README.md.
+# The CA key is the crown jewel: anyone holding it can mint a client cert.
+slate/pki/*
+!slate/pki/*.sh
+!slate/pki/README.md
+**/certs/
+*.key
+*.pem
+*.crt
+*.csr
+*.srl
+*.p12
+*.pfx
+
+# --- pc-agent/ (per-PC Go agent) -------------------------------------------
+# Real per-PC config has that PC's broker password; keep config.example
+pc-agent/config
+pc-agent/config.*
+!pc-agent/config.example
+
+# --- sbc4/relay-mqtt/ (Go sidecar on the SBC4) ------------------------------
+# Real sidecar config has the sbc4 broker password; keep config.example
+sbc4/relay-mqtt/config
+sbc4/relay-mqtt/config.*
+!sbc4/relay-mqtt/config.example
