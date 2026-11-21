@@ -1,0 +1,65 @@
+# rack-control Mosquitto ACL. Deployed to /etc/mosquitto/acl.
+# This file holds usernames and topics only, no secrets.
+#
+# Least privilege: anything not granted here is denied. There are no global
+# "topic" lines (lines before the first "user" would apply to everyone) and
+# no "pattern" lines.
+#   read  = may receive messages on the topic (Mosquitto 2.x checks this when
+#           it delivers a message, so a subscription to a forbidden topic is
+#           accepted but never gets anything)
+#   write = may publish to the topic (a denied publish is dropped)
+# Topic contract: see the plan's MQTT table / docs.
+#
+# Containment: only orchestrator can both command a PC shutdown and cut a
+# relay. A compromised PC reaches only its own cmd/status; a compromised SBC4
+# only receives relay commands and reports relay state.
+
+# --- orchestrator: rackctl on the Slate (the privileged client) ------------
+user orchestrator
+topic write rack/pc/+/cmd
+topic write rack/relay/+/set
+topic write rack/ceph/maintenance/set
+topic read rack/pc/+/status
+topic read rack/relay/+/state
+topic read rack/sbc4/status
+topic read rack/ceph/maintenance/state
+
+# --- sbc4: relay-mqtt sidecar on the Phidget SBC4 ---------------------------
+user sbc4
+topic read rack/relay/+/set
+topic write rack/relay/+/state
+topic write rack/sbc4/status
+
+# --- PCs: pc-agent on each Proxmox node (only its own two topics) ----------
+user intel-91c45d
+topic read rack/pc/intel-91c45d/cmd
+topic write rack/pc/intel-91c45d/status
+
+user intel-d1babf
+topic read rack/pc/intel-d1babf/cmd
+topic write rack/pc/intel-d1babf/status
+
+user intel-177e78
+topic read rack/pc/intel-177e78/cmd
+topic write rack/pc/intel-177e78/status
+
+user intel-a163f8
+topic read rack/pc/intel-a163f8/cmd
+topic write rack/pc/intel-a163f8/status
+
+# intel-1ecbc8 is also the Ceph maintenance node (noout/norebalance).
+user intel-1ecbc8
+topic read rack/pc/intel-1ecbc8/cmd
+topic write rack/pc/intel-1ecbc8/status
+topic read rack/ceph/maintenance/set
+topic write rack/ceph/maintenance/state
+
+# --- switch: NOT an MQTT client in v1 (documentation only) -----------------
+# If the switch ever joins as a read-only dashboard, uncomment this block, add
+# "switch" to rackpki's user list, and issue it a cert and password. It must
+# never get write access.
+# user switch
+# topic read rack/pc/+/status
+# topic read rack/relay/+/state
+# topic read rack/sbc4/status
+# topic read rack/ceph/maintenance/state

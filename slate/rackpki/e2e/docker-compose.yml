@@ -1,0 +1,48 @@
+# rackpki e2e: real Mosquitto 2.0.20 with the committed acl, a generated
+# passwd/certs, and mosquitto.conf whose only change is the listener address.
+# Driven by e2e_test.go (go test -tags e2e ./e2e/); don't run it by hand.
+#
+# Isolation: the network is `internal: true` (no gateway, no NAT, no
+# published ports), so neither container can reach 192.168.8.0/24 or
+# anything outside this subnet. The probe runs inside the network.
+name: rackpki-e2e
+
+networks:
+  e2e:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+
+services:
+  broker:
+    build:
+      context: ${E2E_BROKER_CONTEXT:?set by e2e_test.go}
+      dockerfile: Dockerfile.broker
+    # -v also logs to stdout (the container has no syslog), so failures can be debugged.
+    command: ["mosquitto", "-v", "-c", "/etc/mosquitto/mosquitto.conf"]
+    networks:
+      e2e:
+        ipv4_address: 172.31.250.10
+
+  probe:
+    image: eclipse-mosquitto:2.0.20
+    depends_on: [broker]
+    entrypoint: ["/probe/probe"]
+    environment:
+      BROKER_ADDR: 172.31.250.10:8883
+      BROKER_NAME: 172.31.250.10
+      CERT_DIR: /probe/certs
+      # Fake test passwords, passed through from e2e_test.go's environment.
+      MQTT_ORCHESTRATOR_PASSWORD:
+      MQTT_SBC4_PASSWORD:
+      MQTT_INTEL_91C45D_PASSWORD:
+      MQTT_INTEL_D1BABF_PASSWORD:
+      MQTT_INTEL_177E78_PASSWORD:
+      MQTT_INTEL_A163F8_PASSWORD:
+      MQTT_INTEL_1ECBC8_PASSWORD:
+    volumes:
+      - ${E2E_PROBE_DIR:?set by e2e_test.go}:/probe:ro
+    networks:
+      e2e:
+        ipv4_address: 172.31.250.20
