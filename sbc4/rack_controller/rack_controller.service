@@ -1,0 +1,28 @@
+[Unit]
+Description=rack_controller: SBC4 VINT hub owner (relays, fans, SSR) + control socket
+# Replaces relay_controller.service: only ONE process may own the hub.
+Conflicts=relay_controller.service
+After=local-fs.target
+# Never stop retrying: without this unit every PC stays powered off.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# root for Phidget/VINT access. Group=rackctl makes the control socket
+# root:rackctl so relay-mqtt (a member of rackctl) can connect.
+User=root
+Group=rackctl
+ExecStart=/usr/userapps/rack_controller/rack_controller
+# /run/rack_controller, root:rackctl 0750. Recreated on every (re)start.
+RuntimeDirectory=rack_controller
+RuntimeDirectoryMode=0750
+# Socket 0666 & ~0117 = 0660 (rack_controller also chmods it to 0660).
+UMask=0117
+Restart=always
+RestartSec=2
+# SIGTERM -> graceful exit: relays open, fans 0, SSR off, socket removed.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,12 +1,36 @@
 # Merge brief: relay_controller + fan_control -> one rack_controller
 
-**Status: DEFERRED to phase 2.** Nothing in `sbc4/rack_controller/` except
-`_src/` exists yet. Until the merge lands, the SBC4 keeps running the original
-`relay_controller` as the systemd service `relay_controller` (no socket, so
-relays are not MQTT-commandable). The `relay-mqtt` sidecar is built and tested
-against a fake controller that implements the socket contract below, and needs
-this merge before it's useful on hardware. Whole-system spec:
+**Status: MERGED (code), not yet deployed.** `sbc4/rack_controller/` now
+holds `rack_controller.cpp`, `core.h`/`core.cpp`, `hal.h`/`hal_phidget.h`,
+`Makefile`, `rack_controller.service` and `tests/`. See
+[../sbc4/rack_controller/README.md](../sbc4/rack_controller/README.md). It was
+verified with `make test` (fake HAL, real AF_UNIX socket), `make check-mac`
+(Phidget22 headers) and `make xcheck` (relay-mqtt's real socket client and
+parser against this server). It has not run on hardware. The SBC4 keeps
+running the original `relay_controller` until the
+[swap](DEPLOY.md#sbc4-systemd-swap-phase-2). Whole-system spec:
 [rack-mqtt-shutdown-handoff.md](rack-mqtt-shutdown-handoff.md).
+
+### Result vs. this brief
+
+- One `Channel{Kind}` table (relays 0-7, then fans, then SSR), one
+  channel-state mutex (never held across a Phidget call), one heartbeat
+  thread that feeds every armed channel, and one set of event handlers. A
+  second mutex only serializes output changes, so a slow device can't stall
+  the heartbeat.
+- Fans and SSR are opened before the blocking relay wait, so cooling comes up
+  first. A relay attach failure is still fatal, as the brief requires.
+- Relays use the blocking startup verbatim. The stagger is index-based: relay
+  *i* gets slot *i*. It skips relays commanded `open`, and relays already on
+  from a `close`. A socket `close` arms the failsafe before `setState(1)`.
+- Fans and SSR use dynamic attach and are re-driven to their **commanded**
+  value on re-attach.
+- On a failsafe trip, the channel rejects commands (`err ... failsafe
+  tripped`) until rack_controller reopens it, which it does automatically.
+  After a VINT blip or a trip, a relay is reported `cmd=open` and stays open
+  and unarmed, as in relay_controller, until `close <ch>`.
+- fan_control's `--static` was dropped, because fans and SSR are always
+  dynamic. Ports 3 and 4 are reserved for the relays.
 
 ## Why (the hard constraint)
 

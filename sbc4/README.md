@@ -40,19 +40,21 @@ heartbeat owns ports 2-5. Relays keep relay_controller's blocking startup
 
 ## Phase-2 status
 
-The merge is **deferred**. `rack_controller/` currently contains only `_src/`,
-the two originals, which are the rollback baseline and are never edited.
-`relay-mqtt/` is built and tested against a fake controller that implements the
-socket contract (`/run/rack_controller/ctl.sock`). It is not useful on hardware
-until the merge ships, so until then relays are not MQTT-commandable and
-`rackctl` runs with `--no-relay`.
+The merge is **done** in code: `rack_controller/` (`rack_controller.cpp`, `core.*`,
+the HAL headers, `Makefile`, `rack_controller.service`, tests). Its README has
+the details: [rack_controller/README.md](rack_controller/README.md). It has
+been tested only against a fake HAL, and against relay-mqtt's real socket
+client (`make xcheck`). It has not run on hardware yet. Until the swap is done
+on the SBC4, the old `relay_controller` still owns the hub, relays aren't
+MQTT-commandable, and `rackctl` runs with `--no-relay`. `_src/` stays the
+rollback baseline and is never edited.
 
 ## systemd units
 
 | unit | user | notes |
 |------|------|-------|
 | `relay_controller.service` | (existing) | runs today; disabled at the phase-2 swap |
-| `rack_controller.service` | as shipped (hub access) | `Restart=always`, `Conflicts=relay_controller.service`, `RuntimeDirectory=rack_controller` (socket 0660, group `rackctl`) |
+| `rack_controller.service` | root, group `rackctl` (hub access) | `Restart=always`, `Conflicts=relay_controller.service`, `RuntimeDirectory=rack_controller` (socket 0660, group `rackctl`) |
 | `relay-mqtt.service` | `relay-mqtt`, group `rackctl` | `After=rack_controller.service`, no `Requires=`; reconnects forever to broker and socket |
 
 Stopping or restarting the hub owner opens every relay (graceful exit or
@@ -67,7 +69,8 @@ then `enable --now rack_controller`) is in
 ## Build
 
 - `rack_controller`: built on the SBC4 only (`make`, C++17, `-lphidget22
-  -lpthread`). `make test` and `make check-mac` run on the dev box.
+  -lpthread`; `make install` puts it in `/usr/userapps/rack_controller/`).
+  `make test`, `make check-mac` and `make xcheck` run on the dev box.
 - `relay-mqtt`: cross-built on the dev box (`make` ->
   `cargo zigbuild --release --target armv7-unknown-linux-musleabihf`), one
   static binary copied over. Nothing installed via apt.
