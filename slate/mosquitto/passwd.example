@@ -1,0 +1,18 @@
+# EXAMPLE ONLY: the hashes below are placeholders, not real hashes.
+# The real /etc/mosquitto/passwd is generated on the dev Mac with
+#   op run --environment=cxdbzvay5orxm3fmqu4cydzn3y -- ./bin/rackpki passwd
+# into the gitignored slate/pki/passwd, then copied to the Slate from
+# slate/pki/deploy/broker/ (`rackpki bundle broker`). See slate/README.md.
+# Never deploy this example file: every client would be refused.
+#
+# Format (Mosquitto 2.x, PBKDF2-HMAC-SHA512, 101 iterations, 12-byte salt,
+# 64-byte key, standard base64):
+#   <user>:$7$101$<base64 salt>$<base64 hash>
+# Mosquitto skips lines that start with '#'.
+orchestrator:$7$101$PLACEHOLDERSALT$PLACEHOLDERHASH
+sbc4:$7$101$PLACEHOLDERSALT$PLACEHOLDERHASH
+intel-91c45d:$7$101$PLACEHOLDERSALT$PLACEHOLDERHASH
+intel-d1babf:$7$101$PLACEHOLDERSALT$PLACEHOLDERHASH
+intel-177e78:$7$101$PLACEHOLDERSALT$PLACEHOLDERHASH
+intel-a163f8:$7$101$PLACEHOLDERSALT$PLACEHOLDERHASH
+intel-1ecbc8:$7$101$PLACEHOLDERSALT$PLACEHOLDERHASH

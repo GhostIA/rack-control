@@ -1,0 +1,6 @@
+# Build context = the `rackpki bundle broker` output (made by e2e_test.go).
+# Files get the production layout and ownership: /etc/mosquitto and
+# /etc/mosquitto/certs, owned by mosquitto, mode 0600.
+FROM eclipse-mosquitto:2.0.20
+COPY --chown=mosquitto:mosquitto --chmod=0600 mosquitto.conf acl passwd /etc/mosquitto/
+COPY --chown=mosquitto:mosquitto --chmod=0600 ca.crt broker.crt broker.key /etc/mosquitto/certs/
