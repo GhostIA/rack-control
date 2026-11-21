@@ -1,4 +1,5 @@
-// Package config loads and validates /etc/rack/rack.toml.
+// Package config loads and validates /etc/rack/rack.toml (TOML, read with
+// viper and decoded strictly with mapstructure).
 package config
 
 import (
@@ -6,11 +7,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/pelletier/go-toml/v2"
+	"github.com/spf13/viper"
 )
 
 // Roles a PC may carry.
@@ -20,45 +24,32 @@ const (
 	RoleVM  = "vm"
 )
 
-// Duration is a time.Duration that decodes from a TOML string like "120s".
-type Duration struct{ time.Duration }
-
-// UnmarshalText implements encoding.TextUnmarshaler.
-func (d *Duration) UnmarshalText(b []byte) error {
-	v, err := time.ParseDuration(string(b))
-	if err != nil {
-		return err
-	}
-	d.Duration = v
-	return nil
-}
-
 // Broker is the [broker] table.
 type Broker struct {
-	Host         string `toml:"host"`
-	Port         int    `toml:"port"`
-	CA           string `toml:"ca"`
-	Cert         string `toml:"cert"`
-	Key          string `toml:"key"`
-	Username     string `toml:"username"`
-	PasswordFile string `toml:"password_file"`
+	Host         string `mapstructure:"host"`
+	Port         int    `mapstructure:"port"`
+	CA           string `mapstructure:"ca"`
+	Cert         string `mapstructure:"cert"`
+	Key          string `mapstructure:"key"`
+	Username     string `mapstructure:"username"`
+	PasswordFile string `mapstructure:"password_file"`
 }
 
 // Shutdown is the [shutdown] table.
 type Shutdown struct {
-	Timeout   Duration `toml:"timeout"`
-	CutDelay  Duration `toml:"cut_delay"`
-	Order     []string `toml:"order"`
-	PVEQuorum int      `toml:"pve_quorum"`
+	Timeout   time.Duration `mapstructure:"timeout"`
+	CutDelay  time.Duration `mapstructure:"cut_delay"`
+	Order     []string      `mapstructure:"order"`
+	PVEQuorum int           `mapstructure:"pve_quorum"`
 }
 
 // PC is one [[pc]] entry.
 type PC struct {
-	Name    string   `toml:"name"`
-	IP      string   `toml:"ip"`
-	Relay   int      `toml:"relay"`
-	Roles   []string `toml:"roles"`
-	Timeout Duration `toml:"timeout"`
+	Name    string        `mapstructure:"name"`
+	IP      string        `mapstructure:"ip"`
+	Relay   int           `mapstructure:"relay"`
+	Roles   []string      `mapstructure:"roles"`
+	Timeout time.Duration `mapstructure:"timeout"`
 }
 
 // HasRole reports whether the PC carries role r.
@@ -73,18 +64,49 @@ func (p PC) HasRole(r string) bool {
 
 // Config is the whole file.
 type Config struct {
-	Broker   Broker   `toml:"broker"`
-	Shutdown Shutdown `toml:"shutdown"`
-	PCs      []PC     `toml:"pc"`
+	Broker   Broker   `mapstructure:"broker"`
+	Shutdown Shutdown `mapstructure:"shutdown"`
+	PCs      []PC     `mapstructure:"pc"`
 }
 
 // Load reads, defaults and validates a config file.
+// The file is read once and always parsed as TOML, whatever it is called.
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	return Parse(string(b))
+}
+
+// checkKeys rejects keys viper would otherwise reinterpret before the strict
+// decode sees them: viper lowercases every key (so "host" and "HOST" would
+// silently merge) and splits keys on "." (so a quoted "shutdown.cut_delay"
+// would land in [shutdown]). Every rack.toml key is lowercase without dots.
+func checkKeys(path string, node any) error {
+	switch n := node.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(n))
+		for k := range n {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if k != strings.ToLower(k) || strings.Contains(k, ".") {
+				return fmt.Errorf("invalid config key %q (keys are lowercase, without dots)", path+k)
+			}
+			if err := checkKeys(path+k+".", n[k]); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, x := range n {
+			if err := checkKeys(fmt.Sprintf("%s[%d].", strings.TrimSuffix(path, "."), i), x); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // MinTimeout is the shortest accepted shutdown timeout: sustained ping loss
@@ -94,34 +116,68 @@ const MinTimeout = 10 * time.Second
 // rawPC mirrors PC with pointers so missing required keys are detectable
 // (a missing relay must not silently become relay 0).
 type rawPC struct {
-	Name    *string   `toml:"name"`
-	IP      *string   `toml:"ip"`
-	Relay   *int      `toml:"relay"`
-	Roles   *[]string `toml:"roles"`
-	Timeout Duration  `toml:"timeout"`
+	Name    *string       `mapstructure:"name"`
+	IP      *string       `mapstructure:"ip"`
+	Relay   *int          `mapstructure:"relay"`
+	Roles   *[]string     `mapstructure:"roles"`
+	Timeout time.Duration `mapstructure:"timeout"`
 }
 
 type rawConfig struct {
-	Broker   Broker   `toml:"broker"`
-	Shutdown Shutdown `toml:"shutdown"`
-	PCs      []rawPC  `toml:"pc"`
+	Broker   Broker   `mapstructure:"broker"`
+	Shutdown Shutdown `mapstructure:"shutdown"`
+	PCs      []rawPC  `mapstructure:"pc"`
 }
 
-// Parse decodes, defaults and validates TOML text. Unknown keys are rejected
-// so a typo (e.g. "cutdelay") never silently falls back to a default, and
-// name/ip/relay/roles are required in every [[pc]].
+// Parse decodes, defaults and validates TOML text.
 func Parse(text string) (*Config, error) {
-	var raw rawConfig
-	md, err := toml.Decode(text, &raw)
-	if err != nil {
+	var tree map[string]any
+	if err := toml.Unmarshal([]byte(text), &tree); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	if und := md.Undecoded(); len(und) > 0 {
-		keys := make([]string, len(und))
-		for i, k := range und {
-			keys[i] = k.String()
+	if err := checkKeys("", tree); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	v := viper.New()
+	v.SetConfigType("toml")
+	if err := v.ReadConfig(strings.NewReader(text)); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	return decode(v)
+}
+
+var durationType = reflect.TypeOf(time.Duration(0))
+
+// strictHook replaces viper's lenient default decode hooks: durations must be
+// strings like "120s" (a bare number would silently mean nanoseconds), and a
+// float never truncates into an integer field such as relay.
+func strictHook(from, to reflect.Type, data any) (any, error) {
+	if to == durationType {
+		s, ok := data.(string)
+		if !ok {
+			return nil, fmt.Errorf("want a duration string like \"120s\", got %v", data)
 		}
-		return nil, fmt.Errorf("unknown config keys: %s", strings.Join(keys, ", "))
+		return time.ParseDuration(s)
+	}
+	if to.Kind() >= reflect.Int && to.Kind() <= reflect.Uint64 && (from.Kind() == reflect.Float32 || from.Kind() == reflect.Float64) {
+		return nil, fmt.Errorf("want an integer, got %v", data)
+	}
+	return data, nil
+}
+
+// strict turns off viper's weak typing ("1" -> 1, "osd" -> ["osd"]).
+func strict(dc *mapstructure.DecoderConfig) {
+	dc.WeaklyTypedInput = false
+	dc.DecodeHook = mapstructure.DecodeHookFuncType(strictHook)
+}
+
+// decode unmarshals, defaults and validates. UnmarshalExact rejects unknown
+// keys so a typo (e.g. "cutdelay") never silently falls back to a default,
+// and name/ip/relay/roles are required in every [[pc]].
+func decode(v *viper.Viper) (*Config, error) {
+	var raw rawConfig
+	if err := v.UnmarshalExact(&raw, strict); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	c := Config{Broker: raw.Broker, Shutdown: raw.Shutdown}
 	var errs []error
@@ -148,7 +204,7 @@ func Parse(text string) (*Config, error) {
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
-	c.applyDefaults(md)
+	c.applyDefaults(v)
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -157,20 +213,20 @@ func Parse(text string) (*Config, error) {
 
 // applyDefaults fills only keys that are absent, so explicit values such
 // as cut_delay = "0s" are honoured.
-func (c *Config) applyDefaults(md toml.MetaData) {
-	if !md.IsDefined("broker", "port") {
+func (c *Config) applyDefaults(v *viper.Viper) {
+	if !v.IsSet("broker.port") {
 		c.Broker.Port = 8883
 	}
-	if !md.IsDefined("broker", "username") {
+	if !v.IsSet("broker.username") {
 		c.Broker.Username = "orchestrator"
 	}
-	if !md.IsDefined("shutdown", "timeout") {
-		c.Shutdown.Timeout.Duration = 120 * time.Second
+	if !v.IsSet("shutdown.timeout") {
+		c.Shutdown.Timeout = 120 * time.Second
 	}
-	if !md.IsDefined("shutdown", "cut_delay") {
-		c.Shutdown.CutDelay.Duration = 30 * time.Second
+	if !v.IsSet("shutdown.cut_delay") {
+		c.Shutdown.CutDelay = 30 * time.Second
 	}
-	if !md.IsDefined("shutdown", "pve_quorum") {
+	if !v.IsSet("shutdown.pve_quorum") {
 		c.Shutdown.PVEQuorum = min(3, len(c.PCs))
 	}
 }
@@ -199,10 +255,10 @@ func (c *Config) Validate() error {
 	if c.Broker.Port < 1 || c.Broker.Port > 65535 {
 		add("broker.port %d out of range", c.Broker.Port)
 	}
-	if c.Shutdown.Timeout.Duration < MinTimeout {
-		add("shutdown.timeout %s is below the minimum %s", c.Shutdown.Timeout.Duration, MinTimeout)
+	if c.Shutdown.Timeout < MinTimeout {
+		add("shutdown.timeout %s is below the minimum %s", c.Shutdown.Timeout, MinTimeout)
 	}
-	if c.Shutdown.CutDelay.Duration < 0 {
+	if c.Shutdown.CutDelay < 0 {
 		add("shutdown.cut_delay must not be negative")
 	}
 	if c.Broker.Username == "" {
@@ -255,8 +311,8 @@ func (c *Config) Validate() error {
 			}
 			seen[r] = true
 		}
-		if p.Timeout.Duration != 0 && p.Timeout.Duration < MinTimeout {
-			add("pc %q: timeout %s is below the minimum %s", p.Name, p.Timeout.Duration, MinTimeout)
+		if p.Timeout != 0 && p.Timeout < MinTimeout {
+			add("pc %q: timeout %s is below the minimum %s", p.Name, p.Timeout, MinTimeout)
 		}
 	}
 
@@ -307,8 +363,8 @@ func (c *Config) PC(name string) (PC, bool) {
 
 // TimeoutFor returns the per-PC timeout or the global default.
 func (c *Config) TimeoutFor(p PC) time.Duration {
-	if p.Timeout.Duration > 0 {
-		return p.Timeout.Duration
+	if p.Timeout > 0 {
+		return p.Timeout
 	}
-	return c.Shutdown.Timeout.Duration
+	return c.Shutdown.Timeout
 }

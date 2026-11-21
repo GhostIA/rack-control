@@ -82,8 +82,8 @@ func (o *Orchestrator) Shutdown(ctx context.Context, targets []string, opt Shutd
 			o.logf("  --no-relay: leaving relay %d closed", p.Relay)
 			continue
 		}
-		o.logf("  waiting cut_delay %s before cutting relay %d", o.Cfg.Shutdown.CutDelay.Duration, p.Relay)
-		if err := o.sleep(ctx, o.Cfg.Shutdown.CutDelay.Duration, "cut_delay"); err != nil {
+		o.logf("  waiting cut_delay %s before cutting relay %d", o.Cfg.Shutdown.CutDelay, p.Relay)
+		if err := o.sleep(ctx, o.Cfg.Shutdown.CutDelay, "cut_delay"); err != nil {
 			o.logf("  %s is down; relay %d NOT cut", p.Name, p.Relay)
 			return o.stopped(pcs[i+1:], err)
 		}
@@ -401,8 +401,8 @@ func (o *Orchestrator) MapVerify(ctx context.Context) (map[int]string, error) {
 		if !down {
 			return found, fmt.Errorf("channel %d: %s did not go down within %s; relay %d left CLOSED", ch, p.Name, timeout, ch)
 		}
-		o.logf("  %s down after %s; waiting cut_delay %s", p.Name, round(took), o.Cfg.Shutdown.CutDelay.Duration)
-		if err := o.sleep(ctx, o.Cfg.Shutdown.CutDelay.Duration, "cut_delay"); err != nil {
+		o.logf("  %s down after %s; waiting cut_delay %s", p.Name, round(took), o.Cfg.Shutdown.CutDelay)
+		if err := o.sleep(ctx, o.Cfg.Shutdown.CutDelay, "cut_delay"); err != nil {
 			return found, err
 		}
 		if err := o.openAndConfirm(ctx, ch); err != nil {
@@ -578,8 +578,8 @@ func (o *Orchestrator) printMapping(found map[int]string) error {
 			roles[i] = fmt.Sprintf("%q", r)
 		}
 		fmt.Fprintf(&b, "[[pc]]\nname = %q\nip = %q\nrelay = %d\nroles = [%s]\n", p.Name, p.IP, ch, strings.Join(roles, ", "))
-		if p.Timeout.Duration > 0 {
-			fmt.Fprintf(&b, "timeout = %q\n", p.Timeout.Duration.String())
+		if p.Timeout > 0 {
+			fmt.Fprintf(&b, "timeout = %q\n", p.Timeout.String())
 		}
 		b.WriteString("\n")
 	}

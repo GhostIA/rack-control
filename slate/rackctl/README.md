@@ -39,18 +39,30 @@ Add `/etc/rack/` and `/usr/bin/rackctl` (plus the two symlinks) to
 ## Commands
 
 ```
-rackctl [--config FILE] <command> ...        (default /etc/rack/rack.toml)
+rackctl [--config FILE] <command> [flags] [args]   (default /etc/rack/rack.toml)
 
 shutdown [--force] [--dry-run] [--no-relay] all|NAME...
 up [--dry-run] all|NAME...
 status
-map-verify [--dry-run]
+map-verify [--dry-run] [--channels 3,4,5,6,7] [--boot-timeout 5m]
 ceph-maintenance [--dry-run] on|off
 relay [--force] [--dry-run] open|close CH
+completion bash|zsh|fish|powershell
+help [command]
 ```
 
-Exit codes are 0 on success, 1 on a failure or refusal, and 2 for a usage or
-config error. `shutdown` and `up` require an explicit target (`all` or names).
+The command line is parsed by [cobra](https://github.com/spf13/cobra) (pflag
+syntax): flags may come before, between or after the arguments, long flags
+take two dashes (`--force`, `--config=FILE` or `--config FILE`), and `--`
+ends flag parsing. The single-dash form the old parser also took (`-force`,
+`-config FILE`) is now a usage error (exit 2), so update any script or hook
+that still uses it. `--config` works with every command, in any position.
+`rackctl <command> --help` (or `rackctl help <command>`) shows each command's
+flags. `rack-shutdown --help` is the help for `rackctl shutdown`.
+
+Exit codes are 0 on success (including `--help`), 1 on a failure or refusal,
+and 2 for a usage or config error. A usage error prints the error and the
+command's usage; a runtime failure prints only the error. `shutdown` and `up` require an explicit target (`all` or names).
 Running bare `rack-shutdown` does nothing destructive. Only one rackctl
 (other than `status`) can run at a time, enforced by a lock on
 `/var/run/rackctl.lock`.
@@ -106,8 +118,10 @@ discovers the real wiring:
   retained state `open`. Run `rackctl shutdown all` first, then
   `rackctl relay open <ch>` for each unmapped channel (3, 5, 7), because
   relay_controller closes all 8 at boot.
-- For each channel 0..7: `close` it, then wait ≤180 s for any configured IP to
-  answer. If one does, wait ≤120 s for its agent's `online`, send `shutdown`,
+- For each channel 0..7 (or only the `--channels` given, e.g.
+  `--channels 3,5,7`; values 0–7, duplicates dropped, tested in ascending
+  order): `close` it, then wait up to `--boot-timeout` (default 5 min, at least
+  30 s) for any configured IP to answer. If one does, wait ≤120 s for its agent's `online`, send `shutdown`,
   wait for sustained ping loss plus `cut_delay`, then `open` it again. If none
   answers, `open` it.
 - Any surprise (a second PC answers, the agent never comes online, the PC
@@ -125,9 +139,17 @@ hand. Closing is always allowed, because it only powers a host on.
 
 ### Config
 
-`/etc/rack/rack.toml` (see `rack.example.toml`) is validated before anything
-runs:
-- unknown keys are rejected
+`/etc/rack/rack.toml` (see `rack.example.toml`) is always read as TOML,
+whatever the file is called, with [viper](https://github.com/spf13/viper), and
+decoded strictly. It is validated before anything runs:
+- unknown keys are rejected (viper `UnmarshalExact`), anywhere in the file
+- keys must be lowercase and must not contain dots (viper would otherwise
+  merge `host`/`HOST` and move a quoted `"shutdown.cut_delay"` into
+  `[shutdown]`)
+- no type coercion: `relay = "1"`, `relay = 1.5`, `roles = "osd"` and
+  `port = "8883"` are errors
+- durations are strings with a unit (`"120s"`, `"5m"`); a bare number is an
+  error
 - every `[[pc]]` needs `name`, `ip` (IPv4), `relay` (0–7) and `roles`
   (`[]` allowed)
 - names, IPs and relays must be unique
@@ -135,7 +157,10 @@ runs:
 - timeouts must be at least 10 s
 
 Defaults apply only to keys that are absent: port 8883, username
-`orchestrator`, timeout 120 s, cut_delay 30 s, pve_quorum 3.
+`orchestrator`, timeout 120 s, cut_delay 30 s, pve_quorum 3. There are no
+environment-variable overrides for config keys or the config path (only
+`RACKCTL_LOG_LEVEL` = trace|debug|info|warn|error, which sets the level of
+the diagnostic log on stderr; default info).
 
 ### --dry-run
 
@@ -161,8 +186,8 @@ count as a confirmation.
 ## Layout
 
 ```
-main.go                 argv[0] dispatch, flags, lock, wiring
-internal/config         rack.toml parsing + validation (unknown keys rejected)
+main.go                 argv[0] dispatch, cobra commands and flags, lock, wiring
+internal/config         rack.toml via viper + validation (unknown keys rejected)
 internal/orch           all procedures, behind Bus / Pinger / Clock interfaces
 internal/mqttbus        paho.mqtt.golang Bus (mTLS + password)
 internal/ping           privileged ICMP (ip4:icmp) Pinger

@@ -37,7 +37,7 @@ func TestDefaultsAndOrder(t *testing.T) {
 	if c.Broker.Port != 8883 || c.Broker.Username != "orchestrator" {
 		t.Errorf("broker defaults: %+v", c.Broker)
 	}
-	if c.Shutdown.Timeout.Duration != 120*time.Second || c.Shutdown.CutDelay.Duration != 30*time.Second || c.Shutdown.PVEQuorum != 3 {
+	if c.Shutdown.Timeout != 120*time.Second || c.Shutdown.CutDelay != 30*time.Second || c.Shutdown.PVEQuorum != 3 {
 		t.Errorf("shutdown defaults: %+v", c.Shutdown)
 	}
 	got := []string{}
@@ -62,8 +62,8 @@ func TestExplicitZeroAndQuorumDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Shutdown.CutDelay.Duration != 0 {
-		t.Errorf("explicit cut_delay 0s became %s", c.Shutdown.CutDelay.Duration)
+	if c.Shutdown.CutDelay != 0 {
+		t.Errorf("explicit cut_delay 0s became %s", c.Shutdown.CutDelay)
 	}
 	two := strings.Replace(base, `order = ["a", "b", "c"]`, `order = ["a", "b"]`, 1)
 	two = two[:strings.Index(two, "[[pc]]\nname = \"c\"")]
