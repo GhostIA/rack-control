@@ -67,6 +67,7 @@ struct Config {
     uint32_t    failsafeMs = kDefaultFailsafeMs;
     std::string socketPath = kDefaultSocket;
     bool        startOpen = false;   // --start-open: every relay commanded open at start
+    unsigned    relayMask = 0xFF;    // --relays: bit i set = relay i closed at start (default all)
 };
 
 void PrintUsage(const char* argv0);

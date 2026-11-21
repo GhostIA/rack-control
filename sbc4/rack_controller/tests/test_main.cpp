@@ -234,6 +234,49 @@ static void TestStartOpenKeepsAllRelaysOff() {
     CHECK(!t.hal.Get(3).state);
 }
 
+// --relays 0,1,2,4,6: only those relays are switched on by the stagger;
+// 3, 5, 7 stay open and unarmed, and `state` says so.
+static void TestRelaysMaskClosesOnlyListed() {
+    const char* argv[] = {"rack_controller", "--relays", "0,1,2,4,6"};
+    Config c; int code = 0;
+    CHECK(ParseArgs(3, const_cast<char**>(argv), c, code));
+    CHECK_EQ(c.relayMask, 0x57u);
+    Rig t(c);
+    t.ctl->CreateAll();
+    t.ctl->OpenRelaysBlocking();
+    t.ctl->RunStagger();
+    for (int i = 0; i < 8; ++i) {
+        const bool on = (i == 0 || i == 1 || i == 2 || i == 4 || i == 6);
+        CHECK_EQ(t.hal.Get(i).state, on);
+        CHECK_EQ(t.hal.Get(i).failsafe, on);
+    }
+    auto st = t.ctl->Handle("state");
+    CHECK_EQ(st[3], std::string("relay 3 cmd=open attached=1"));
+    CHECK_EQ(st[4], std::string("relay 4 cmd=closed attached=1"));
+    CHECK_EQ(t.sleeps.size(), 8ul);   // index-based slots kept
+}
+
+static void TestRelaysFlagRejectsBadLists() {
+    for (const char* bad : {"", "8", "0,0", "0,", ",0", "0 1", "1-3", "a", "0,1,2,3,4,5,6,7,0", "-1"}) {
+        const char* argv[] = {"rack_controller", "--relays", bad};
+        Config c; int code = 0;
+        CHECK(!ParseArgs(3, const_cast<char**>(argv), c, code));
+        CHECK_EQ(code, 2);
+    }
+    const char* missing[] = {"rack_controller", "--relays"};
+    Config c; int code = 0;
+    CHECK(!ParseArgs(2, const_cast<char**>(missing), c, code));
+    // --start-open still wins over --relays.
+    const char* both[] = {"rack_controller", "--relays", "0,1", "--start-open"};
+    Config d; code = 0;
+    CHECK(ParseArgs(4, const_cast<char**>(both), d, code));
+    Rig t(d);
+    t.ctl->CreateAll();
+    t.ctl->OpenRelaysBlocking();
+    t.ctl->RunStagger();
+    for (int i = 0; i < 8; ++i) CHECK(!t.hal.Get(i).state);
+}
+
 static void TestStartOpenFlagParses() {
     const char* argv[] = {"rack_controller", "--start-open"};
     Config c; int code = 0;
@@ -827,6 +870,8 @@ int main() {
     TestOpenDuringStaggerSkipsRelay();
     TestStartOpenKeepsAllRelaysOff();
     TestStartOpenFlagParses();
+    TestRelaysMaskClosesOnlyListed();
+    TestRelaysFlagRejectsBadLists();
     TestCloseDuringStaggerArmsEarly();
     TestRelayCommands();
     TestSetStateFailureIsErrNotExit();

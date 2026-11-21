@@ -44,7 +44,7 @@ const char* KindWord(Kind k) {
 void PrintUsage(const char* argv0) {
     std::printf(
         "Usage: %s [--serial N] [--fan PORT[:CHANS]] [--ssr PORT[:CHANS]]\n"
-        "          [--duty D] [--failsafe-ms N] [--socket PATH] [--start-open] [--help]\n\n"
+        "          [--duty D] [--failsafe-ms N] [--socket PATH] [--relays LIST] [--start-open] [--help]\n\n"
         "Owns the SBC4's whole VINT hub: relays (REL1000 x2, hub ports 3 and 4,\n"
         "relay ch 0-7), fans (OUT1100 PWM) and SSR (REL1100), plus a local\n"
         "control socket.\n\n"
@@ -55,6 +55,8 @@ void PrintUsage(const char* argv0) {
         "  --duty D            Initial fan PWM duty 0.0-1.0 (default 0.5).\n"
         "  --failsafe-ms N     Failsafe window in ms, all channels (default %u).\n"
         "  --socket PATH       Control socket (default %s).\n"
+        "  --relays LIST       Relays closed at start, e.g. 0,1,2,4,6 (default all 8);\n"
+        "                      the rest start open. --start-open overrides it.\n"
         "  --start-open        Start with every relay commanded open (PCs stay off;\n"
         "                      no power-on stagger) until a `close <ch>`.\n"
         "  --help              This message.\n",
@@ -62,6 +64,23 @@ void PrintUsage(const char* argv0) {
 }
 
 namespace {
+
+// Parse "d,d,d" (distinct relay digits 0-7, single commas, no spaces) into a
+// bitmask. Strict, like the --fan/--ssr channel lists.
+bool ParseRelayList(const char* s, unsigned& mask) {
+    mask = 0;
+    if (!s || !*s) return false;
+    for (const char* p = s;;) {
+        if (*p < '0' || *p > '7') return false;
+        const unsigned bit = 1u << (*p - '0');
+        if (mask & bit) return false;
+        mask |= bit;
+        ++p;
+        if (*p == '\0') return true;
+        if (*p != ',' || p[1] == '\0') return false;
+        ++p;
+    }
+}
 
 // Parse "PORT" or "PORT:c1,c2,...". Returns false on malformed input.
 // Strict: PORT is one digit 0-5, CHANS one or more distinct digits 0-3
@@ -161,6 +180,14 @@ bool ParseArgs(int argc, char** argv, Config& cfg, int& exitCode) {
             cfg.socketPath = p;
         } else if (!std::strcmp(a, "--start-open")) {
             cfg.startOpen = true;
+        } else if (!std::strcmp(a, "--relays")) {
+            if (!NeedArg(i, argc, a)) { exitCode = 2; return false; }
+            unsigned mask = 0;
+            if (!ParseRelayList(argv[++i], mask)) {
+                std::fprintf(stderr, "ERROR: bad --relays '%s' (want e.g. 0,1,2,4,6: distinct digits 0-7)\n", argv[i]);
+                exitCode = 2; return false;
+            }
+            cfg.relayMask = mask;
         } else {
             std::fprintf(stderr, "ERROR: unknown argument '%s' (try --help)\n", a);
             exitCode = 2; return false;
@@ -285,7 +312,7 @@ Controller::Controller(Hal& hal, const Config& cfg, std::atomic<bool>& running)
         // All relays default closed (load on). --start-open commands them all
         // open instead, so the stagger skips every relay and the PCs stay off
         // until a `close` (used for map-verify / an ordered rack-up).
-        c.cmdOn = !cfg.startOpen;
+        c.cmdOn = !cfg.startOpen && (cfg.relayMask & (1u << i)) != 0;
         ch_.push_back(c);
     }
     for (int n : cfg.fan.channels) {
