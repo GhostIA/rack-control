@@ -172,6 +172,40 @@ func TestMosquittoConf(t *testing.T) {
 	}
 }
 
+// TestListenerScopedAfterListener: a listener-scoped option placed before the
+// first `listener` line makes Mosquitto create an implicit default listener on
+// 0.0.0.0:1883 / [::]:1883 (plaintext, all interfaces). Observed on the Slate
+// with 2.0.18 when use_username_as_clientid sat above the listener.
+func TestListenerScopedAfterListener(t *testing.T) {
+	raw, _ := confDirectives(t)
+	scoped := map[string]bool{
+		"use_username_as_clientid": true, "cafile": true, "capath": true,
+		"certfile": true, "keyfile": true, "require_certificate": true,
+		"use_identity_as_username": true, "tls_version": true, "ciphers": true,
+		"ciphers_tls1.3": true, "crlfile": true, "max_connections": true,
+		"protocol": true, "socket_domain": true, "bind_interface": true,
+		"mount_point": true, "http_dir": true, "max_qos": true,
+		"max_topic_alias": true, "use_subject_as_username": true,
+	}
+	seenListener := false
+	for i, line := range strings.Split(raw, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || strings.HasPrefix(f[0], "#") {
+			continue
+		}
+		if f[0] == "listener" {
+			seenListener = true
+			continue
+		}
+		if scoped[f[0]] && !seenListener {
+			t.Errorf("line %d: listener-scoped %q appears before any listener (opens default 1883)", i+1, f[0])
+		}
+	}
+	if !seenListener {
+		t.Fatal("no listener line")
+	}
+}
+
 func TestPasswdExampleHasEveryUserOnly(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(mosqDir, "passwd.example"))
 	if err != nil {

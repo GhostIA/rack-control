@@ -54,3 +54,6 @@ sbc4/relay-mqtt/config.*.toml
 **/target/
 **/e2e/certs/
 **/e2e/tmp/
+
+# Claude Code local state (agent worktrees)
+.claude/
