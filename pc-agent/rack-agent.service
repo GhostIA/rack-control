@@ -1,0 +1,38 @@
+[Unit]
+Description=rack-agent: MQTT-commanded graceful power-off for this Proxmox host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rack-agent
+Group=rack-agent
+ExecStart=/usr/local/bin/rack-agent run --config /etc/rack-agent/config.toml
+Environment=RUST_LOG=info
+Restart=always
+RestartSec=5
+
+# Hardening. The agent needs: outbound TCP to the broker, the D-Bus system bus
+# (AF_UNIX) for logind, and on intel-1ecbc8 the ceph CLI (reads /etc/ceph).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=-/etc/rack -/etc/rack-agent
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

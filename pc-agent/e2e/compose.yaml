@@ -1,0 +1,35 @@
+# E2E topology. The agent sits only on `internal` (internal: true = no route
+# out of Docker, so it can never reach 192.168.8.0/24). The broker also joins
+# `edge` solely so its port can be published on 127.0.0.1 for the host-side
+# driver; mosquitto has no bridge config and never dials out.
+name: rack-agent-e2e
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    container_name: rack-agent-e2e-mosquitto
+    volumes:
+      - ./work/mosquitto:/mosquitto/config:ro
+    ports:
+      - "127.0.0.1:18883:8883"
+    networks: [internal, edge]
+
+  agent:
+    build:
+      context: ..
+      dockerfile: e2e/agent.Dockerfile
+    image: rack-agent-e2e:local
+    container_name: rack-agent-e2e-agent
+    command: ["run", "--config", "/etc/rack-agent-e2e/config.toml"]
+    environment:
+      RUST_LOG: info
+    volumes:
+      - ./work/agent:/etc/rack-agent-e2e:ro
+    networks: [internal]
+    restart: "no"
+    depends_on: [mosquitto]
+
+networks:
+  internal:
+    internal: true
+  edge: {}

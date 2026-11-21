@@ -1,0 +1,17 @@
+[package]
+name = "rack-agent-e2e"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+publish = false
+description = "Docker e2e driver for rack-agent (mosquitto mTLS + passwd + ACL, agent in dry_run)"
+
+[dependencies]
+rumqttc = { version = "0.24.0", features = ["use-rustls"] }
+tokio = { version = "1.40", features = ["rt", "macros", "time", "sync"] }
+anyhow = "1"
+rcgen = "0.13"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
