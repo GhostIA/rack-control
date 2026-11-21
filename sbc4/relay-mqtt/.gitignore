@@ -1,0 +1,3 @@
+/target/
+# The repo-level rule `sbc4/relay-mqtt/config.*` would hide the example.
+!/config.example.toml

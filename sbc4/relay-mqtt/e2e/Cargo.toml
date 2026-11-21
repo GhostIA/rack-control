@@ -1,0 +1,21 @@
+[package]
+name = "relay-mqtt-e2e"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Host-side runner for the relay-mqtt docker e2e (test-only certs, compose driver)"
+publish = false
+
+# Standalone: not part of the relay-mqtt build.
+[workspace]
+
+[[bin]]
+name = "e2e"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha2 = "0.10"
+base64 = "0.22"

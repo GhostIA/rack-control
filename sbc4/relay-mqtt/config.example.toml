@@ -1,0 +1,21 @@
+# relay-mqtt configuration. Install as /etc/rack/relay-mqtt.toml (0644 root:root, no secrets).
+# Every key is optional; the values below are the built-in defaults.
+
+# Slate broker (TLS only). An IP literal is verified against the server cert's IP SAN.
+host = "192.168.8.1"
+port = 8883
+
+# mTLS material (see slate/rackpki). The cert CN must equal `username`.
+ca_file = "/etc/rack/tls/ca.crt"
+cert_file = "/etc/rack/tls/sbc4.crt"
+key_file = "/etc/rack/tls/sbc4.key"
+
+# MQTT username; also used as the client id.
+username = "sbc4"
+# One line; a single trailing newline is stripped.
+password_file = "/etc/rack/sbc4.password"
+
+# rack_controller's control socket.
+socket = "/run/rack_controller/ctl.sock"
+
+keep_alive_secs = 30

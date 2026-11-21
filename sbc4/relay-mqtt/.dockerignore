@@ -1,0 +1,7 @@
+# Image build context (e2e/Dockerfile): sources + vendored deps only.
+# Never send e2e/work (test keys) or anything else.
+*
+!Cargo.toml
+!Cargo.lock
+!src
+!target/vendor

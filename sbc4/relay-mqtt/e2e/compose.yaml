@@ -1,0 +1,69 @@
+# relay-mqtt docker e2e. Driven by `make e2e` (the Rust runner in e2e/src);
+# don't `up` this by hand: work/ (test PKI + passwd) is generated per run.
+#
+# The network is internal: no container can leave the docker host, so nothing
+# here can reach the real rack (192.168.8.0/24). No ports are published.
+
+name: relay-mqtt-e2e
+
+x-image: &image
+  image: relay-mqtt-e2e:local
+
+networks:
+  e2e:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+
+volumes:
+  ctlsock: {}
+
+services:
+  broker:
+    image: eclipse-mosquitto:2.0.20
+    command: ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl:/mosquitto/config/acl:ro
+      - ./work/broker:/certs:ro
+    networks:
+      e2e:
+        ipv4_address: 172.31.250.10
+    healthcheck:
+      # Process liveness only (pgrep is in the alpine base); the tester
+      # retries its own connection until the TLS listener answers.
+      test: ["CMD", "pgrep", "mosquitto"]
+      interval: 2s
+      retries: 15
+
+  # Stand-in for rack_controller: serves the socket contract in memory.
+  controller:
+    <<: *image
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+    command: ["fake-controller", "/run/rack_controller/ctl.sock", "--mode", "666"]
+    volumes:
+      - ctlsock:/run/rack_controller
+    network_mode: none
+
+  relay-mqtt:
+    <<: *image
+    command: ["relay-mqtt", "--config", "/e2e/relay-mqtt.toml"]
+    environment:
+      RUST_LOG: debug,rumqttc=info,rustls=info
+    volumes:
+      - ./relay-mqtt.e2e.toml:/e2e/relay-mqtt.toml:ro
+      - ./work/sbc4:/e2e/sbc4:ro
+      - ctlsock:/run/rack_controller
+    networks: [e2e]
+
+  tester:
+    <<: *image
+    entrypoint: ["e2e-check"]
+    command: ["check", "172.31.250.10", "/e2e/tester"]
+    volumes:
+      - ./work/tester:/e2e/tester:ro
+    networks: [e2e]
+    profiles: [test]
