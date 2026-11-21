@@ -15,25 +15,9 @@ import (
 	"time"
 )
 
-func noPositional(name string, pos []string) error {
-	if len(pos) != 0 {
-		return fmt.Errorf("%w: %s takes no arguments, got %q", errUsage, name, pos)
-	}
-	return nil
-}
-
 // ---- init-ca ---------------------------------------------------------------
 
-func (e *env) cmdInitCA(args []string) error {
-	var c common
-	fs := e.newFlags("init-ca", &c)
-	pos, err := parse(fs, args)
-	if err != nil {
-		return err
-	}
-	if err := noPositional("init-ca", pos); err != nil {
-		return err
-	}
+func (e *env) cmdInitCA(c common) error {
 	if err := e.resolve(&c, false); err != nil {
 		return err
 	}
@@ -54,20 +38,10 @@ func (e *env) cmdInitCA(args []string) error {
 
 // ---- server ----------------------------------------------------------------
 
-func (e *env) cmdServer(args []string) error {
-	var c common
-	fs := e.newFlags("server", &c)
-	ipStr := fs.String("ip", DefaultBrokerIP, "broker IP address (the only SAN)")
-	pos, err := parse(fs, args)
-	if err != nil {
-		return err
-	}
-	if err := noPositional("server", pos); err != nil {
-		return err
-	}
-	ip := net.ParseIP(*ipStr)
+func (e *env) cmdServer(c common, ipStr string) error {
+	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return fmt.Errorf("%w: --ip %q is not an IP address", errUsage, *ipStr)
+		return fmt.Errorf("%w: --ip %q is not an IP address", errUsage, ipStr)
 	}
 	if v4 := ip.To4(); v4 != nil {
 		ip = v4
@@ -95,15 +69,8 @@ func (e *env) cmdServer(args []string) error {
 
 // ---- client ----------------------------------------------------------------
 
-func (e *env) cmdClient(args []string) error {
-	var c common
-	fs := e.newFlags("client", &c)
-	all := fs.Bool("all", false, "issue a cert for every user")
-	pos, err := parse(fs, args)
-	if err != nil {
-		return err
-	}
-	users, err := pickUsers(pos, *all, false)
+func (e *env) cmdClient(c common, pos []string, all bool) error {
+	users, err := pickUsers(pos, all, false)
 	if err != nil {
 		return err
 	}
@@ -167,16 +134,7 @@ func pickUsers(pos []string, all, allowBroker bool) ([]string, error) {
 
 // ---- passwd ----------------------------------------------------------------
 
-func (e *env) cmdPasswd(args []string) error {
-	var c common
-	fs := e.newFlags("passwd", &c)
-	pos, err := parse(fs, args)
-	if err != nil {
-		return err
-	}
-	if err := noPositional("passwd", pos); err != nil {
-		return err
-	}
+func (e *env) cmdPasswd(c common) error {
 	if err := e.resolve(&c, false); err != nil {
 		return err
 	}
@@ -194,16 +152,8 @@ func (e *env) cmdPasswd(args []string) error {
 
 // ---- bundle ----------------------------------------------------------------
 
-func (e *env) cmdBundle(args []string) error {
-	var c common
-	fs := e.newFlags("bundle", &c)
-	fs.StringVar(&c.mosquittoDir, "mosquitto-dir", "", "dir with the committed acl and mosquitto.conf")
-	all := fs.Bool("all", false, "bundle the broker and every user")
-	pos, err := parse(fs, args)
-	if err != nil {
-		return err
-	}
-	names, err := pickUsers(pos, *all, true)
+func (e *env) cmdBundle(c common, pos []string, all bool) error {
+	names, err := pickUsers(pos, all, true)
 	if err != nil {
 		return err
 	}
@@ -356,18 +306,8 @@ func checkPasswdFile(data []byte) error {
 
 // ---- expiry ----------------------------------------------------------------
 
-func (e *env) cmdExpiry(args []string) error {
-	var c common
-	fs := e.newFlags("expiry", &c)
-	warnDays := fs.Int("warn-days", 180, "warn when a cert expires within this many days")
-	pos, err := parse(fs, args)
-	if err != nil {
-		return err
-	}
-	if err := noPositional("expiry", pos); err != nil {
-		return err
-	}
-	if *warnDays < 0 {
+func (e *env) cmdExpiry(c common, warnDays int) error {
+	if warnDays < 0 {
 		return fmt.Errorf("%w: --warn-days must be >= 0", errUsage)
 	}
 	if err := e.resolve(&c, false); err != nil {
@@ -388,7 +328,7 @@ func (e *env) cmdExpiry(args []string) error {
 	}
 	sort.Strings(names)
 	t := now()
-	horizon := t.Add(time.Duration(*warnDays) * 24 * time.Hour)
+	horizon := t.Add(time.Duration(warnDays) * 24 * time.Hour)
 	tw := tabwriter.NewWriter(e.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "FILE\tCN\tNOT AFTER (UTC)\tDAYS LEFT\tSTATUS")
 	warn := false
