@@ -81,11 +81,10 @@ fn real_main(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     log::info!(
-        "relay-mqtt {} broker={}:{} user={} socket={}",
+        "relay-mqtt {} broker={}:{} socket={}",
         env!("CARGO_PKG_VERSION"),
         cfg.host,
         cfg.port,
-        cfg.username,
         cfg.socket.display()
     );
     let rt = match tokio::runtime::Builder::new_current_thread()
